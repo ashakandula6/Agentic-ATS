@@ -1,388 +1,549 @@
 import logging
-import os
 import re
 import json
 from dotenv import load_dotenv
+import os
 import google.generativeai as genai
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 # Setup logging
-logging.basicConfig(level=logging.DEBUG, filename='logs.txt', format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, filename='logs.txt', format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Load environment variables
-load_dotenv()
-
-# Configure Gemini API
 try:
+    load_dotenv()
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    llm = genai.GenerativeModel("gemini-1.5-flash")
+    llm = genai.GenerativeModel("gemini-2.5-flash-lite-preview-06-17")
 except Exception as e:
     logger.error(f"Failed to configure Gemini API: {e}")
     raise
 
-def fallback_ats_score(resume_text: str, job_description: str, required_experience: int, projects: List[Dict]) -> Dict:
+def extract_projects_from_resume(resume_text: str) -> List[Dict]:
     """
-    Fallback scoring logic if LLM fails - adjusted for new scoring weights.
-    Scoring: 70% projects, 10% technical skills, 10% good-to-have skills, 10% experience.
+    Extract all projects from resume with enhanced accuracy using LLM.
+    Returns list of projects with name, description, and skills.
     """
-    score = 0
-    pain_points_list = []
+    try:
+        prompt = f"""
+        **TASK:** Extract ALL projects from the resume text with 100% accuracy.
+        
+        **RESUME TEXT:**
+        {resume_text}
+        
+        **EXTRACTION REQUIREMENTS:**
+        1. Find ALL project sections (may be labeled as: Projects, Academic Projects, Personal Projects, Work Projects, Portfolio, etc.)
+        2. For each project, extract:
+           - Project Name (if not explicitly named, create a descriptive name)
+           - Description (complete project description)
+           - Skills/Technologies used (extract ALL technical skills, tools, frameworks, languages, etc.)
+        
+        3. **SKILL EXTRACTION RULES:**
+           - Extract programming languages (e.g., Python, Java, JavaScript, R)
+           - Extract frameworks (e.g., React, Django, Flask, Spring)
+           - Extract databases (e.g., MySQL, MongoDB, PostgreSQL)
+           - Extract cloud platforms (e.g., AWS, Azure, GCP)
+           - Extract tools (e.g., Git, Docker, Kubernetes)
+           - Extract libraries (e.g., TensorFlow, PyTorch, NumPy)
+           - Extract methodologies (e.g., Agile, Scrum)
+           - Include version numbers if mentioned (e.g., "Python 3.8", "React 18")
+           - For single-character skills like "R", ensure they refer to the programming language, not part of other terms (e.g., not "R" in "BERT" or "research")
+        
+        **OUTPUT FORMAT - Return ONLY valid JSON:**
+        {{
+            "projects": [
+                {{
+                    "name": "<project name>",
+                    "description": "<full project description>",
+                    "skills": ["<skill1>", "<skill2>", "<skill3>", ...]
+                }},
+                ...
+            ]
+        }}
+        
+        **EXAMPLES:**
+        - Correct: "Used Python, R, and TensorFlow" → ["Python", "R", "TensorFlow"]
+        - Incorrect: "Research in AI" → [] (no "R")
+        - Incorrect: "BERT model" → [] (no "R")
+        
+        **IMPORTANT:**
+        - If no projects found, return empty projects array
+        - Extract skills exactly as mentioned in the resume
+        - Don't infer or add skills not explicitly mentioned
+        - Include all technical skills, even if they seem basic
+        """
+        
+        response = llm.generate_content(prompt)
+        output = response.text.strip()
+        
+        # Clean JSON output
+        if output.startswith("```json"):
+            output = output[len("```json"):].rstrip("```").strip()
+        elif output.startswith("```"):
+            output = output[len("```"):].rstrip("```").strip()
+        
+        result = json.loads(output)
+        projects = result.get("projects", [])
+        
+        logger.info(f"Extracted {len(projects)} projects from resume")
+        for i, project in enumerate(projects):
+            logger.debug(f"Project {i+1}: {project.get('name', 'Unnamed')} - Skills: {project.get('skills', [])}")
+        
+        return projects
+        
+    except Exception as e:
+        logger.error(f"Failed to extract projects using LLM: {e}")
+        return extract_projects_fallback(resume_text)
 
-    # Extract skills from job description
-    # Mandatory skills
-    mandatory_skills_raw = re.findall(r'(?:required|must have|essential|mandatory)\s*[:\s]*(.*?)(?=\n[A-Z][a-zA-Z\s]+:|\Z)', job_description, re.IGNORECASE | re.DOTALL)
+def extract_projects_fallback(resume_text: str) -> List[Dict]:
+    """
+    Fallback project extraction using regex patterns.
+    """
+    projects = []
+    
+    # Common project section headers
+    project_patterns = [
+        r'(?i)(?:^|\n)\s*(?:projects?|academic\s+projects?|personal\s+projects?|work\s+projects?|portfolio)\s*[:\-]?\s*\n',
+        r'(?i)(?:^|\n)\s*(?:key\s+projects?|major\s+projects?|relevant\s+projects?)\s*[:\-]?\s*\n'
+    ]
+    
+    for pattern in project_patterns:
+        matches = list(re.finditer(pattern, resume_text))
+        if matches:
+            for match in matches:
+                start_pos = match.end()
+                # Find the end of the projects section
+                next_section = re.search(r'(?i)\n\s*(?:experience|education|skills|certifications?|achievements?|awards?)\s*[:\-]?\s*\n', resume_text[start_pos:])
+                end_pos = start_pos + next_section.start() if next_section else len(resume_text)
+                
+                projects_text = resume_text[start_pos:end_pos]
+                projects.extend(parse_projects_text(projects_text))
+    
+    if not projects:
+        logger.warning("No projects found using fallback extraction")
+    
+    return projects
+
+def parse_projects_text(projects_text: str) -> List[Dict]:
+    """
+    Parse individual projects from projects section text.
+    """
+    projects = []
+    
+    # Split by bullet points or project indicators
+    project_blocks = re.split(r'(?:\n\s*[•▪▫\-\*]\s*|\n\s*\d+\.\s*)', projects_text)
+    
+    for block in project_blocks:
+        if len(block.strip()) < 20:  # Skip very short blocks
+            continue
+            
+        # Extract project name (usually first line or bolded text)
+        lines = [line.strip() for line in block.split('\n') if line.strip()]
+        if not lines:
+            continue
+            
+        project_name = lines[0]
+        description = ' '.join(lines[1:]) if len(lines) > 1 else lines[0]
+        
+        # Extract skills using common patterns
+        skills = extract_skills_from_text(description)
+        
+        if skills:  # Only include projects with identifiable skills
+            projects.append({
+                "name": project_name,
+                "description": description,
+                "skills": skills
+            })
+    
+    return projects
+
+def extract_skills_from_text(text: str) -> List[str]:
+    """
+    Extract technical skills from project description text with stricter matching.
+    """
+    skills = []
+    
+    # Updated skill patterns with stricter matching for "R"
+    skill_patterns = {
+        'languages': r'\b(?:Python|Java|JavaScript|TypeScript|C\+\+|C#|PHP|Ruby|Go|Rust|Swift|Kotlin|Scala|R(?!\w)|MATLAB|SQL)\b',
+        'frameworks': r'\b(?:React|Angular|Vue|Django|Flask|Spring|Express|Laravel|Rails|ASP\.NET|Bootstrap|Tailwind)\b',
+        'databases': r'\b(?:MySQL|PostgreSQL|MongoDB|Redis|Cassandra|DynamoDB|SQLite|Oracle|SQL Server)\b',
+        'cloud': r'\b(?:AWS|Azure|GCP|Google Cloud|Heroku|DigitalOcean|Docker|Kubernetes)\b',
+        'tools': r'\b(?:Git|Jenkins|Travis|CircleCI|Jira|Slack|Postman|Swagger|Webpack|Babel)\b',
+        'libraries': r'\b(?:TensorFlow|PyTorch|NumPy|Pandas|Scikit-learn|OpenCV|React Native|jQuery|Lodash)\b'
+    }
+    
+    for category, pattern in skill_patterns.items():
+        matches = re.findall(pattern, text, re.IGNORECASE)
+        skills.extend(matches)
+    
+    # Remove duplicates while preserving order
+    skills = list(dict.fromkeys(skills))
+    
+    # Validate skills against known technical skills
+    known_technical_skills = {
+        'python', 'java', 'javascript', 'typescript', 'c++', 'c#', 'php', 'ruby', 'go', 'rust', 'swift', 'kotlin', 'scala', 'r',
+        'matlab', 'sql', 'react', 'angular', 'vue', 'django', 'flask', 'spring', 'express', 'laravel', 'rails', 'asp.net',
+        'bootstrap', 'tailwind', 'mysql', 'postgresql', 'mongodb', 'redis', 'cassandra', 'dynamodb', 'sqlite', 'oracle',
+        'sql server', 'aws', 'azure', 'gcp', 'google cloud', 'heroku', 'digitalocean', 'docker', 'kubernetes', 'git',
+        'jenkins', 'travis', 'circleci', 'jira', 'slack', 'postman', 'swagger', 'webpack', 'babel', 'tensorflow', 'pytorch',
+        'numpy', 'pandas', 'scikit-learn', 'opencv', 'react native', 'jquery', 'lodas'
+    }
+    
+    validated_skills = [skill for skill in skills if skill.lower() in known_technical_skills]
+    
+    logger.debug(f"Extracted skills: {validated_skills}")
+    return validated_skills
+
+def extract_mandatory_skills_from_jd(job_description: str) -> List[str]:
+    """
+    Extract mandatory technical skills from job description with enhanced accuracy.
+    """
+    try:
+        prompt = f"""
+        **TASK:** Extract ONLY mandatory/required technical skills from the job description.
+        
+        **JOB DESCRIPTION:**
+        {job_description}
+        
+        **EXTRACTION RULES:**
+        1. Look for sections with keywords: "required", "must have", "essential", "mandatory", "must-have"
+        2. Extract ONLY technical skills (programming languages, frameworks, tools, databases, etc.)
+        3. Ignore soft skills, experience years, degree requirements, or business skills
+        4. Extract skills from parentheses (e.g., "AI frameworks (TensorFlow, PyTorch)" → "TensorFlow", "PyTorch")
+        5. Split compound requirements (e.g., "Python and R" → "Python", "R")
+        6. Remove skill level indicators (e.g., "Advanced Python" → "Python")
+        7. For single-character skills like "R", ensure they refer to the programming language, not part of other terms (e.g., not "R" in "BERT")
+        
+        **OUTPUT FORMAT - Return ONLY valid JSON:**
+        {{
+            "mandatory_skills": ["<skill1>", "<skill2>", "<skill3>", ...]
+        }}
+        
+        **EXAMPLES:**
+        - Correct: "Must have Python, R, and SQL" → ["Python", "R", "SQL"]
+        - Incorrect: "Experience with BERT" → [] (no "R")
+        - Incorrect: "Research skills" → [] (no "R")
+        
+        **IMPORTANT:**
+        - Extract exact skill names as mentioned
+        - Don't include experience requirements or proficiency levels
+        - Focus only on technical skills that can be learned/demonstrated
+        """
+        
+        response = llm.generate_content(prompt)
+        output = response.text.strip()
+        
+        # Clean JSON output
+        if output.startswith("```json"):
+            output = output[len("```json"):].rstrip("```").strip()
+        elif output.startswith("```"):
+            output = output[len("```"):].rstrip("```").strip()
+        
+        result = json.loads(output)
+        skills = result.get("mandatory_skills", [])
+        
+        logger.info(f"Extracted {len(skills)} mandatory skills from JD: {skills}")
+        return skills
+        
+    except Exception as e:
+        logger.error(f"Failed to extract mandatory skills using LLM: {e}")
+        return extract_mandatory_skills_fallback(job_description)
+
+def extract_mandatory_skills_fallback(job_description: str) -> List[str]:
+    """
+    Fallback extraction of mandatory skills using regex patterns.
+    """
     mandatory_skills = []
-    for skill_block in mandatory_skills_raw:
-        lines = [line.strip() for line in skill_block.split('\n') if line.strip()]
-        for line in lines:
-            # Remove verbose prefixes
-            line = re.sub(r'^(Proficiency in|Strong|Experience with|Understanding of)\s+', '', line, flags=re.IGNORECASE)
-            # Extract skills in parentheses
-            paren_skills = re.findall(r'\((.*?)\)', line)
-            if paren_skills:
+    
+    # Find mandatory sections
+    mandatory_patterns = [
+        r'(?:required|must have|essential|mandatory|must-have)\s*[:\s]*(.*?)(?=\n[A-Z][a-zA-Z\s]+:|\n\n|\Z)',
+        r'(?:requirements?|qualifications?)\s*[:\s]*(.*?)(?=\n[A-Z][a-zA-Z\s]+:|\n\n|\Z)'
+    ]
+    
+    for pattern in mandatory_patterns:
+        matches = re.findall(pattern, job_description, re.IGNORECASE | re.DOTALL)
+        for match in matches:
+            # Extract skills from the matched text
+            lines = [line.strip() for line in match.split('\n') if line.strip()]
+            for line in lines:
+                # Remove common prefixes
+                line = re.sub(r'^(?:Proficiency in|Strong|Experience with|Knowledge of)\s+', '', line, flags=re.IGNORECASE)
+                
+                # Extract skills in parentheses
+                paren_skills = re.findall(r'\((.*?)\)', line)
                 for skill_group in paren_skills:
                     skills = [s.strip() for s in skill_group.split(',') if s.strip()]
                     mandatory_skills.extend(skills)
-            # Remove parentheses and their content for the remaining text
-            line = re.sub(r'\s*\([^()]*\)', '', line)
-            # Split by 'and' or commas
-            skills = re.split(r',\s*|\s+and\s+', line, flags=re.IGNORECASE)
-            skills = [skill.strip() for skill in skills if skill.strip()]
-            mandatory_skills.extend(skills)
-    # Remove duplicates and non-specific terms
-    non_specific_terms = {'programming skills', 'Generative AI frameworks', 'ML libraries', 'data analysis', 'visualization tools', 'cloud platforms'}
-    mandatory_skills = list(set(skill for skill in mandatory_skills if skill and skill not in non_specific_terms))
-    logger.debug(f"Extracted mandatory skills: {mandatory_skills}")
-
-    # Good-to-have skills
-    good_to_have_skills = re.findall(r'(?:preferred|nice to have|good to have)\s*[:\s]*(.*?)(?=\n[A-Z][a-zA-Z\s]+:|\Z)', job_description, re.IGNORECASE | re.DOTALL)
-    good_to_have_skills_list = []
-    for skill_block in good_to_have_skills:
-        lines = [line.strip() for line in skill_block.split('\n') if line.strip()]
-        for line in lines:
-            line = re.sub(r'^(Experience with|Familiarity with|Knowledge of)\s+', '', line, flags=re.IGNORECASE)
-            skills = re.split(r',\s*|\s+and\s+', line, flags=re.IGNORECASE)
-            skills = [skill.strip() for skill in skills if skill.strip()]
-            good_to_have_skills_list.extend(skills)
-    good_to_have_skills = list(set(skill for skill in good_to_have_skills_list if skill))
-    logger.debug(f"Extracted good-to-have skills: {good_to_have_skills}")
-
-    # 70% Project Skills
-    project_skills = []
-    for project in projects:
-        project_skills.extend(project.get("skills", []))
-    project_skills = list(set(project_skills))  # Remove duplicates
-    logger.debug(f"Project skills: {project_skills}")
-
-    matched_project_skills = sum(1 for skill in mandatory_skills if any(re.search(rf'\b{skill}\b', ps, re.IGNORECASE) for ps in project_skills))
-    matched_skills = [skill for skill in mandatory_skills if any(re.search(rf'\b{skill}\b', ps, re.IGNORECASE) for ps in project_skills)]
-    logger.debug(f"Matched mandatory skills in projects: {matched_skills}")
-    project_score = (matched_project_skills / max(len(mandatory_skills), 1)) * 70 if mandatory_skills else 0
-    score += project_score
-    if matched_project_skills < len(mandatory_skills):
-        missing_skills = [skill for skill in mandatory_skills if not any(re.search(rf'\b{skill}\b', ps, re.IGNORECASE) for ps in project_skills)]
-        pain_points_list.append(f"Missing mandatory project skills: {', '.join(missing_skills)}")
-
-    # 10% Technical Skills (non-project)
-    skills_section = re.search(r'\[SECTION: Skills\](.*?)(?=\[SECTION:|\Z)', resume_text, re.DOTALL)
+                
+                # Remove parentheses and split by common delimiters
+                line = re.sub(r'\s*\(.*?\)', '', line)
+                skills = re.split(r',\s*|\s+and\s+', line, flags=re.IGNORECASE)
+                skills = [skill.strip() for skill in skills if skill.strip() and len(skill) > 1]
+                mandatory_skills.extend(skills)
+    
+    # Filter out non-technical terms
     technical_skills = []
-    if skills_section:
-        skills_text = skills_section.group(1).strip()
-        for skill in skills_text.split('\n'):
-            skill = skill.strip()
-            if skill and skill not in project_skills:  # Exclude project skills
-                technical_skills.append(skill)
-    matched_tech_skills = sum(1 for skill in mandatory_skills if any(re.search(rf'\b{skill}\b', ts, re.IGNORECASE) for ts in technical_skills))
-    tech_score = (matched_tech_skills / max(len(mandatory_skills), 1)) * 10 if mandatory_skills else 0
-    score += tech_score
-
-    # 10% Good-to-Have Skills
-    all_skills = project_skills + technical_skills
-    matched_good_to_have = sum(1 for skill in good_to_have_skills if any(re.search(rf'\b{skill}\b', s, re.IGNORECASE) for s in all_skills))
-    good_to_have_score = (matched_good_to_have / max(len(good_to_have_skills), 1)) * 10 if good_to_have_skills else 0
-    score += good_to_have_score
-    if matched_good_to_have < len(good_to_have_skills):
-        missing_good_to_have = [skill for skill in good_to_have_skills if not any(re.search(rf'\b{skill}\b', s, re.IGNORECASE) for s in all_skills)]
-        pain_points_list.append(f"Missing good-to-have skills: {', '.join(missing_good_to_have)}")
-
-    # 10% Experience
-    experience_patterns = [
-        r'(\d+\.?\d*)\s*(?:year|yr|yrs|years)?\s*(?:of\s*)?(?:experience|exp)',
-        r'(\d+\.?\d*)\+?\s*(?:year|yr|yrs|years)',
-        r'over\s*(\d+\.?\d*)\s*(?:year|yr|yrs|years)',
-        r'(\d+\.?\d*)\s*to\s*\d+\.?\d*\s*(?:year|yr|yrs|years)'
+    non_technical_patterns = [
+        r'(?i)\b(?:years?|experience|degree|bachelor|master|phd|communication|leadership|team|management)\b'
     ]
-    candidate_years = 0
-    for pattern in experience_patterns:
-        match = re.search(pattern, resume_text, re.IGNORECASE)
-        if match:
-            candidate_years = max(candidate_years, float(match.group(1)))
-    experience_score = 10  # Default to max score if no requirement
-    if required_experience > 0:  # Align with Flask's logic (0 means no requirement)
-        experience_score = min(10, (candidate_years / required_experience * 10))
-        if candidate_years < required_experience:
-            gap = required_experience - candidate_years
-            experience_score -= min(2 * gap, experience_score)  # Deduct 2 points per year below
-            pain_points_list.append(f"Experience gap: {candidate_years} years vs {required_experience} required")
-    score += max(0, experience_score)
+    
+    known_technical_skills = {
+        'python', 'java', 'javascript', 'typescript', 'c++', 'c#', 'php', 'ruby', 'go', 'rust', 'swift', 'kotlin', 'scala', 'r',
+        'matlab', 'sql', 'react', 'angular', 'vue', 'django', 'flask', 'spring', 'express', 'laravel', 'rails', 'asp.net',
+        'bootstrap', 'tailwind', 'mysql', 'postgresql', 'mongodb', 'redis', 'cassandra', 'dynamodb', 'sqlite', 'oracle',
+        'sql server', 'aws', 'azure', 'gcp', 'google cloud', 'heroku', 'digitalocean', 'docker', 'kubernetes', 'git',
+        'jenkins', 'travis', 'circleci', 'jira', 'slack', 'postman', 'swagger', 'webpack', 'babel', 'tensorflow', 'pytorch',
+        'numpy', 'pandas', 'scikit-learn', 'opencv', 'react native', 'jquery', 'lodas'
+    }
+    
+    for skill in mandatory_skills:
+        if (not any(re.search(pattern, skill) for pattern in non_technical_patterns) and
+            skill.lower() in known_technical_skills):
+            technical_skills.append(skill)
+    
+    return list(set(technical_skills))
 
-    # Finalize score
-    score = max(0, min(100, score))
-    status = "Shortlisted" if score > 70 else "Under Consideration" if score >= 50 else "Rejected"
+def match_project_skills_to_mandatory(projects: List[Dict], mandatory_skills: List[str]) -> Tuple[List[Dict], List[str], int]:
+    """
+    Match project skills to mandatory skills with stricter matching logic.
+    """
+    matched_projects = []
+    all_matched_skills = set()
+    
+    for project in projects:
+        project_skills = project.get("skills", [])
+        matched_skills_for_project = []
+        
+        # Stricter matching: exact match or word-boundary-aware substring match
+        for mandatory_skill in mandatory_skills:
+            for project_skill in project_skills:
+                # Exact match or ensure single-character skills like "R" are standalone
+                if (mandatory_skill.lower() == project_skill.lower() or
+                    (len(mandatory_skill) > 1 and re.search(rf'\b{re.escape(mandatory_skill)}\b', project_skill, re.IGNORECASE)) or
+                    (len(project_skill) > 1 and re.search(rf'\b{re.escape(project_skill)}\b', mandatory_skill, re.IGNORECASE))):
+                    matched_skills_for_project.append(mandatory_skill)
+                    all_matched_skills.add(mandatory_skill)
+                    break
+                # Special handling for single-character skills like "R"
+                elif mandatory_skill.lower() == 'r':
+                    if re.search(r'\bR\b', project_skill, re.IGNORECASE):
+                        matched_skills_for_project.append(mandatory_skill)
+                        all_matched_skills.add(mandatory_skill)
+                        break
+        
+        if matched_skills_for_project:
+            matched_projects.append({
+                "name": project.get("name", "Unnamed Project"),
+                "description": project.get("description", "No description provided"),
+                "skills": project_skills,
+                "relevance": f"Matches mandatory skills: {', '.join(matched_skills_for_project)}"
+            })
+            logger.debug(f"Project '{project.get('name', 'Unnamed')}' matched skills: {matched_skills_for_project}")
+    
+    # Calculate score
+    score = int((len(all_matched_skills) / max(len(mandatory_skills), 1)) * 100) if mandatory_skills else 0
+    
+    logger.debug(f"Matched skills: {all_matched_skills}, Score: {score}")
+    return matched_projects, list(all_matched_skills), score
+
+def enhanced_technical_analysis(resume_text: str, job_description: str) -> Dict:
+    """
+    Enhanced technical analysis focusing 100% on project-based skills matching.
+    """
+    logger.info("Starting enhanced technical analysis...")
+    
+    # Step 1: Extract ALL projects from resume
+    projects = extract_projects_from_resume(resume_text)
+    logger.info(f"Extracted {len(projects)} projects from resume")
+    
+    # Step 2: Extract mandatory skills from JD
+    mandatory_skills = extract_mandatory_skills_from_jd(job_description)
+    logger.info(f"Extracted {len(mandatory_skills)} mandatory skills from JD")
+    
+    # Step 3: Match project skills to mandatory skills
+    matched_projects, matched_skills, score = match_project_skills_to_mandatory(projects, mandatory_skills)
+    
+    # Step 4: Identify missing skills
+    missing_skills = [skill for skill in mandatory_skills if skill not in matched_skills]
+    
+    # Step 5: Generate pain points
+    pain_points = {
+        "critical": [],
+        "major": [],
+        "minor": []
+    }
+    
+    if missing_skills:
+        pain_points["critical"].append(f"Missing mandatory technical skills: {', '.join(missing_skills[:5])}")
+        if len(missing_skills) > 5:
+            pain_points["critical"].append(f"And {len(missing_skills) - 5} more missing skills")
+    
+    if not matched_projects:
+        pain_points["critical"].append("No projects found with mandatory technical skills")
+    elif len(matched_projects) < len(projects) // 2:
+        pain_points["major"].append("Limited project alignment with mandatory requirements")
+    
+    if score >= 70:
+        pain_points["minor"].append("Strong technical alignment - recommend advanced technical interview")
+    elif score >= 50:
+        pain_points["minor"].append("Moderate alignment - focus interview on missing skills")
+    else:
+        pain_points["minor"].append("Significant gaps - consider extensive technical assessment")
+    
+    # Step 6: Generate status
+    if score >= 70:
+        status = "Shortlisted"
+    elif score >= 50:
+        status = "Under Consideration"
+    else:
+        status = "Rejected"
+    
+    # Step 7: Generate summary
+    summary = generate_enhanced_technical_summary(score, len(matched_projects), len(projects), len(matched_skills), len(mandatory_skills), missing_skills)
+    
+    result = {
+        "score": score,
+        "pain_points": pain_points,
+        "summary": summary,
+        "status": status,
+        "projects": matched_projects,
+        "extraction_stats": {
+            "total_projects_found": len(projects),
+            "projects_with_matches": len(matched_projects),
+            "mandatory_skills_required": len(mandatory_skills),
+            "mandatory_skills_matched": len(matched_skills),
+            "coverage_percentage": int((len(matched_skills) / max(len(mandatory_skills), 1)) * 100)
+        }
+    }
+    
+    logger.info(f"Enhanced technical analysis completed - Score: {score}, Projects: {len(matched_projects)}/{len(projects)}")
+    return result
+
+def generate_enhanced_technical_summary(score: int, matched_projects: int, total_projects: int, 
+                                       matched_skills: int, total_mandatory: int, missing_skills: List[str]) -> str:
+    """
+    Generate enhanced technical summary based on project analysis.
+    """
+    summary_parts = []
+    
+    # Opening statement
+    if score >= 70:
+        summary_parts.append(f"Candidate demonstrates excellent technical alignment with {matched_skills}/{total_mandatory} mandatory skills covered across {matched_projects} relevant projects.")
+    elif score >= 50:
+        summary_parts.append(f"Candidate shows moderate technical fit with {matched_skills}/{total_mandatory} mandatory skills demonstrated in {matched_projects} projects.")
+    else:
+        summary_parts.append(f"Candidate exhibits limited technical alignment with only {matched_skills}/{total_mandatory} mandatory skills found in {matched_projects} projects.")
+    
+    # Project analysis
+    if matched_projects > 0:
+        summary_parts.append(f"Project portfolio analysis reveals {matched_projects} out of {total_projects} projects contain relevant mandatory technologies.")
+    else:
+        summary_parts.append("No projects found containing mandatory technical skills, indicating potential skill gaps.")
+    
+    # Missing skills highlight
+    if missing_skills:
+        critical_missing = missing_skills[:3]
+        summary_parts.append(f"Key gaps identified in: {', '.join(critical_missing)}{'...' if len(missing_skills) > 3 else ''}.")
+    
+    # Recommendation
+    if score >= 70:
+        summary_parts.append("Strong project-based technical foundation warrants immediate technical interview focusing on implementation depth and best practices.")
+    elif score >= 50:
+        summary_parts.append("Technical interview should validate project claims and assess proficiency in missing mandatory skills.")
+    else:
+        summary_parts.append("Extensive technical assessment recommended to evaluate skill gaps and learning potential before proceeding.")
+    
+    return " ".join(summary_parts)
+
+def analyze_resume(resume_text: str, job_description: str, projects: List[Dict] = None) -> Dict:
+    """
+    Main resume analysis function - uses enhanced project-focused analysis.
+    """
+    try:
+        return enhanced_technical_analysis(resume_text, job_description)
+    except Exception as e:
+        logger.error(f"Enhanced analysis failed, falling back to original: {e}")
+        if projects is None:
+            projects = extract_projects_from_resume(resume_text)
+        return fallback_technical_score(resume_text, job_description, projects)
+
+def fallback_technical_score(resume_text: str, job_description: str, projects: List[Dict]) -> Dict:
+    """
+    Fallback scoring logic if enhanced analysis fails.
+    """
+    score = 0
+    pain_points_list = []
+    matched_projects = []
+
+    # Extract mandatory technical skills from JD
+    mandatory_skills = extract_mandatory_skills_fallback(job_description)
+    logger.debug(f"Extracted mandatory technical skills: {mandatory_skills}")
+
+    # Match project skills to mandatory skills
+    matched_tech_skills = []
+    for project in projects:
+        project_skills = project.get("skills", [])
+        matched_skills = []
+        
+        for skill in mandatory_skills:
+            for ps in project_skills:
+                if (skill.lower() == ps.lower() or
+                    (len(skill) > 1 and re.search(rf'\b{re.escape(skill)}\b', ps, re.IGNORECASE)) or
+                    (len(ps) > 1 and re.search(rf'\b{re.escape(ps)}\b', skill, re.IGNORECASE))):
+                    matched_skills.append(skill)
+                    break
+                elif skill.lower() == 'r' and re.search(r'\bR\b', ps, re.IGNORECASE):
+                    matched_skills.append(skill)
+                    break
+        
+        if matched_skills:
+            matched_projects.append({
+                "name": project.get("name", "Unnamed Project"),
+                "description": project.get("description", "No description provided"),
+                "skills": project_skills,
+                "relevance": f"Matches skills: {', '.join(matched_skills)}"
+            })
+            matched_tech_skills.extend(matched_skills)
+    matched_tech_skills = list(set(matched_tech_skills))
+    
+    # Calculate score
+    score = (len(matched_tech_skills) / max(len(mandatory_skills), 1)) * 100 if mandatory_skills else 0
+    logger.debug(f"Technical skills score: {score}, matched_skills: {matched_tech_skills}")
+
+    # Identify missing skills
+    if len(matched_tech_skills) < len(mandatory_skills):
+        missing_skills = [skill for skill in mandatory_skills if skill not in matched_tech_skills]
+        pain_points_list.append(f"Missing mandatory technical skills: {', '.join(missing_skills)}")
 
     # Categorize pain points
     pain_points = {
-        "critical": [p for p in pain_points_list if "Missing mandatory project skills" in p],
-        "major": [p for p in pain_points_list if "Experience gap" in p],
-        "minor": [p for p in pain_points_list if "Missing good-to-have skills" in p] or ["Needs further evaluation in interview"]
+        "critical": [p for p in pain_points_list if "Missing mandatory technical skills" in p],
+        "major": [],
+        "minor": ["Needs further evaluation in interview"] if not pain_points_list else []
     }
+
+    # Determine status
+    status = "Shortlisted" if score >= 70 else "Under Consideration" if score >= 50 else "Rejected"
 
     # Generate summary
     summary = (
-        f"Candidate scored {score} based on project alignment, skills, and experience. "
-        f"Projects cover {matched_project_skills}/{len(mandatory_skills)} mandatory skills, contributing {project_score:.1f}/70 points. "
-        f"Non-project technical skills match {matched_tech_skills}/{len(mandatory_skills)} mandatory skills, adding {tech_score:.1f}/10 points. "
-        f"Good-to-have skills match {matched_good_to_have}/{len(good_to_have_skills)} skills, adding {good_to_have_score:.1f}/10 points. "
-        f"Experience of {candidate_years} years vs {required_experience} required adds {experience_score:.1f}/10 points. "
-        f"{'Strong project alignment; recommend technical interview to validate skills.' if score > 70 else 'Moderate fit; interview to assess gaps.' if score >= 50 else 'Significant gaps; may require extensive training.'}"
+        f"Candidate scored {score:.1f} based on alignment of project skills with mandatory technical requirements. "
+        f"Projects cover {len(matched_tech_skills)}/{len(mandatory_skills)} mandatory skills. "
+        f"{'Strong technical alignment; recommend interview.' if score >= 70 else 'Moderate technical fit; assess gaps in interview.' if score >= 50 else 'Significant technical gaps; may need training.'}"
     )
-
-    # Add relevance to projects
-    for project in projects:
-        project_skills = project.get("skills", [])
-        relevant_skills = [skill for skill in mandatory_skills if any(re.search(rf'\b{skill}\b', ps, re.IGNORECASE) for ps in project_skills)]
-        project["relevance"] = f"Matches {', '.join(relevant_skills)} requirements" if relevant_skills else "No direct match to mandatory skills"
 
     result = {
         "score": int(score),
         "pain_points": pain_points,
         "summary": summary,
         "status": status,
-        "projects": projects
+        "projects": matched_projects
     }
 
-    logger.info(f"Fallback assessment result: {result}")
+    logger.info(f"Fallback technical assessment result: {result}")
     return result
-
-def analyze_resume(resume_text: str, job_description: str, required_experience: int, projects: List[Dict]) -> Dict:
-    """
-    Technical-focused resume analysis using Gemini 1.5 Flash for post-HR screening.
-    Scoring: 70% projects, 10% technical skills, 10% good-to-have skills, 10% experience.
-    """
-    try:
-        # Construct LLM prompt
-        prompt = f"""
-            **CONTEXT:** This is a TECHNICAL SCREENING analysis for a candidate who has passed initial HR screening. 
-            Focus on technical competency, emphasizing project skills (70% of score), with technical skills (10%), 
-            good-to-have skills (10%), and experience (10%).
-
-            **MASKED RESUME DATA:**
-            {resume_text}
-
-            **JOB TECHNICAL REQUIREMENTS:**
-            {job_description}
-
-            **REQUIRED YEARS OF EXPERIENCE:**
-            {required_experience}
-
-            **EXTRACTED PROJECTS:**
-            {json.dumps(projects, indent=2) if projects else "No projects identified."}
-
-            **TECHNICAL ANALYSIS INSTRUCTIONS:**
-
-            **1. EXTRACT SKILLS FROM JOB DESCRIPTION:**
-                - **Mandatory Skills:** Identified by keywords "required", "must have", "essential", "mandatory".
-                  Extract specific skills, including tools mentioned in parentheses (e.g., "Generative AI frameworks (like GPT, BERT)" → "GPT", "BERT").
-                  Remove verbose prefixes like "Proficiency in", "Strong", "Experience with".
-                  Split skills by 'and' or commas (e.g., "Python and R" → "Python", "R").
-                - **Good-to-Have Skills:** Identified by keywords "preferred", "nice to have", "good to have".
-                - Examples: Programming languages, frameworks, cloud platforms, databases, tools.
-
-            **2. SCORE THE CANDIDATE (0-100):**
-
-                **Projects (70 points):**
-                    - Match skills in projects to mandatory skills using exact, case-insensitive matching.
-                    - Score = (Matched Project Skills / Total Mandatory Skills) × 70.
-                    - Each missing mandatory skill = critical pain point.
-
-                **Technical Skills (10 points):**
-                    - Match non-project technical skills (e.g., from Skills section) to mandatory skills.
-                    - Score = (Matched Technical Skills / Total Mandatory Skills) × 10.
-
-                **Good-to-Have Skills (10 points):**
-                    - Match any skills (from projects or elsewhere) to good-to-have skills.
-                    - Score = (Matched Good-to-Have Skills / Total Good-to-Have Skills) × 10.
-
-                **Experience (10 points):**
-                    - Extract candidate's years of experience from resume.
-                    - Compare with required years.
-                    - If required years is 0, award full points (10).
-                    - Otherwise, score = min(10, (Years Experience / Required Years) × 10).
-                    - Deduct 2 points per year below required (minimum 0).
-
-                - Cap total score at 100.
-
-            **3. TECHNICAL PAIN POINTS IDENTIFICATION:**
-
-                **Critical Issues (Immediate Concerns):**
-                    - Missing mandatory skills not covered in projects.
-                    - No relevant project experience matching job requirements.
-
-                **Major Issues (Training Required):**
-                    - Insufficient years of experience.
-                    - Limited project experience in required technologies.
-
-                **Minor Issues (Growth Opportunities):**
-                    - Missing good-to-have skills.
-                    - Could benefit from additional project exposure.
-
-            **4. TECHNICAL SUMMARY REQUIREMENTS:**
-                - Write 130-160 words focusing on:
-                    - Project alignment with mandatory skills.
-                    - Non-project technical skills and good-to-have skills.
-                    - Experience fit and gaps.
-                    - Recommendation for technical interview focus areas.
-                - For high-scoring candidates (70+): Emphasize project strengths.
-                - For moderate candidates (50-69): Highlight gaps and upskilling needs.
-                - For low-scoring candidates (<50): Note significant deficiencies.
-
-            **5. PROJECT ANALYSIS:**
-                - For each project, list:
-                    - Name
-                    - Description
-                    - Skills extracted
-                    - Relevance to mandatory skills (e.g., "Matches Python and AWS requirements").
-                - If no projects, note this and assess other sections.
-
-            **6. ASSIGN STATUS:**
-                - "Shortlisted" if score >= 70.
-                - "Under Consideration" if score is 50–69.
-                - "Rejected" if score < 50.
-
-            **OUTPUT FORMAT - Return ONLY valid JSON:**
-            {{
-                "score": <integer 0-100>,
-                "pain_points": {{
-                    "critical": [<list of critical issues>],
-                    "major": [<list of major concerns>],
-                    "minor": [<list of minor improvements>]
-                }},
-                "summary": "<130-160 words technical assessment>",
-                "status": "<Shortlisted|Under Consideration|Rejected>",
-                "projects": [
-                    {{
-                        "name": "<project name>",
-                        "description": "<description>",
-                        "skills": [<list of skills>],
-                        "relevance": "<relevance to mandatory skills>"
-                    }},
-                    ...
-                ]
-            }}
-
-            **ANALYSIS GUIDELINES:**
-                - Focus on technical competencies and job-specific requirements.
-                - Prioritize project skills (70% weight).
-                - Assess hands-on experience over theoretical knowledge.
-                - Base assessment strictly on resume content provided.
-                - Do not infer or assume unlisted skills.
-        """
-
-        response = llm.generate_content(prompt)
-        output = response.text.strip()
-        logger.info(f"Technical LLM analysis output: {output}")
-
-        # Handle potential code block markers
-        if output.startswith("```json"):
-            output = output[len("```json"):].rstrip("```").strip()
-        elif output.startswith("```"):
-            output = output[3:].rstrip("```").strip()
-
-        # Parse and validate JSON output
-        try:
-            result = json.loads(output)
-            logger.debug(f"Parsed technical analysis: {result}")
-
-            # Validate required fields
-            required_keys = ["score", "pain_points", "summary", "status", "projects"]
-            if not all(key in result for key in required_keys):
-                missing_keys = [key for key in required_keys if key not in result]
-                logger.error(f"Technical analysis missing keys: {missing_keys}")
-                raise ValueError(f"Missing required keys: {missing_keys}")
-
-            # Validate and normalize score
-            if not isinstance(result["score"], (int, float)) or result["score"] < 0 or result["score"] > 100:
-                logger.error(f"Invalid technical score: {result['score']}")
-                raise ValueError(f"Invalid score: {result['score']}")
-            result["score"] = max(0, min(100, int(result["score"])))
-
-            # Validate pain_points
-            if not isinstance(result["pain_points"], dict):
-                logger.warning("Invalid pain_points structure, using default")
-                result["pain_points"] = {
-                    "critical": ["Technical assessment data incomplete"],
-                    "major": ["Requires detailed technical evaluation"],
-                    "minor": ["Technical interview recommended for validation"]
-                }
-            else:
-                for severity in ["critical", "major", "minor"]:
-                    if severity not in result["pain_points"]:
-                        result["pain_points"][severity] = []
-                    elif not isinstance(result["pain_points"][severity], list):
-                        result["pain_points"][severity] = [str(result["pain_points"][severity])]
-                    else:
-                        result["pain_points"][severity] = [str(item) for item in result["pain_points"][severity] if item]
-
-                # Ensure at least one category has content
-                if not any(result["pain_points"][severity] for severity in ["critical", "major", "minor"]):
-                    result["pain_points"]["minor"] = ["Technical evaluation completed - interview recommended"]
-
-            # Validate summary
-            if not isinstance(result["summary"], str):
-                logger.warning("Invalid summary format")
-                result["summary"] = generate_technical_summary(result["score"], result["pain_points"])
-            else:
-                word_count = len(result["summary"].split())
-                if word_count < 120 or word_count > 170:
-                    logger.warning(f"Technical summary length {word_count} outside target range")
-                    if word_count < 120:
-                        result["summary"] += " Technical interview should focus on validating project experience and technical skills."
-
-            # Validate status
-            if result["status"] not in ["Shortlisted", "Under Consideration", "Rejected"]:
-                logger.warning(f"Invalid status: {result['status']}, recalculating based on score")
-                score = result["score"]
-                result["status"] = "Shortlisted" if score >= 70 else "Under Consideration" if score >= 50 else "Rejected"
-
-            # Validate projects
-            if not isinstance(result["projects"], list):
-                logger.warning("Invalid projects format, using provided projects")
-                result["projects"] = projects
-            else:
-                for project in result["projects"]:
-                    if not all(key in project for key in ["name", "description", "skills", "relevance"]):
-                        logger.warning(f"Invalid project format: {project}")
-                        project.update({
-                            "name": project.get("name", "Unnamed Project"),
-                            "description": project.get("description", "No description provided"),
-                            "skills": project.get("skills", []),
-                            "relevance": project.get("relevance", "Relevance not assessed")
-                        })
-
-            logger.info(f"Final technical analysis: {result}")
-            return result
-
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON decode error in technical analysis: {e}")
-            return fallback_ats_score(resume_text, job_description, required_experience, projects)
-        except ValueError as e:
-            logger.error(f"Validation error in technical analysis: {e}")
-            return fallback_ats_score(resume_text, job_description, required_experience, projects)
-
-    except Exception as e:
-        logger.error(f"Technical LLM analysis failed: {e}")
-        return fallback_ats_score(resume_text, job_description, required_experience, projects)
 
 def generate_technical_summary(score: int, pain_points: Dict) -> str:
     """
@@ -391,21 +552,18 @@ def generate_technical_summary(score: int, pain_points: Dict) -> str:
     summary_parts = []
     
     if score >= 70:
-        summary_parts.append("Candidate demonstrates strong alignment with role requirements, particularly in project experience.")
+        summary_parts.append("Candidate demonstrates strong alignment with mandatory technical skills in project experience.")
     elif score >= 50:
-        summary_parts.append("Candidate shows moderate fit with some gaps in project skills and experience.")
+        summary_parts.append("Candidate shows moderate alignment with some gaps in project-based mandatory technical skills.")
     else:
-        summary_parts.append("Candidate exhibits significant gaps in project experience and required skills.")
+        summary_parts.append("Candidate exhibits significant gaps in project-based mandatory technical skills.")
     
     if pain_points.get("critical"):
         summary_parts.append(f"Critical issues: {'; '.join(pain_points['critical'][:2])}.")
     
-    if pain_points.get("major"):
-        summary_parts.append(f"Major concerns: {'; '.join(pain_points['major'][:2])}.")
-    
     if pain_points.get("minor"):
         summary_parts.append(f"Minor improvements: {'; '.join(pain_points['minor'][:2])}.")
     
-    summary_parts.append("Technical interview recommended to validate project experience, assess technical skills, and determine training needs.")
+    summary_parts.append("Technical interview recommended to validate project skills and assess technical proficiency.")
     
     return " ".join(summary_parts)

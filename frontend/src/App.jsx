@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import axios from 'axios';
 import { Upload, FileText, BarChart3, Download, Target, Eye, Trash2 } from 'lucide-react';
 
@@ -13,6 +13,7 @@ function App() {
   const [analyzeClicked, setAnalyzeClicked] = useState(false);
   const [isResumeDragOver, setIsResumeDragOver] = useState(false);
   const [isJDUploadDragOver, setIsJDUploadDragOver] = useState(false);
+  const jdInputRef = useRef(null); // Ref to clear JD input
 
   const handleFileChange = (e) => {
     const newFiles = Array.from(e.target.files);
@@ -20,13 +21,24 @@ function App() {
       (newFile) => !resumes.some((existingFile) => existingFile.name === newFile.name)
     );
     setResumes((prev) => [...prev, ...uniqueNewFiles]);
+    e.target.value = ''; // Clear input to allow re-upload of same files
   };
 
   const handleJDFileChange = (e) => {
+    console.log('JD file input changed:', e.target.files); // Debug log
     const file = e.target.files[0];
-    if (file && (file.type === "application/pdf" || file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document")) {
+    if (!file) {
+      setError('No file selected.');
+      return;
+    }
+    const extension = file.name.split('.').pop().toLowerCase();
+    if (extension === 'pdf' || extension === 'docx') {
       setJobDescriptionFile(file);
       setError(null);
+      e.target.value = ''; // Clear input
+      if (jdInputRef.current) {
+        jdInputRef.current.value = ''; // Clear ref
+      }
     } else {
       setError('Please upload a valid PDF or DOCX file for the job description.');
     }
@@ -34,26 +46,33 @@ function App() {
 
   const removeJDFile = () => {
     setJobDescriptionFile(null);
+    if (jdInputRef.current) {
+      jdInputRef.current.value = ''; // Clear input
+    }
   };
 
   const handleResumeDragOver = (e) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsResumeDragOver(true);
   };
 
   const handleResumeDragLeave = (e) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsResumeDragOver(false);
   };
 
   const handleResumeDrop = (e) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsResumeDragOver(false);
     const droppedFiles = Array.from(e.dataTransfer.files);
     const validFiles = droppedFiles.filter(
-      (file) =>
-        file.type === "application/pdf" ||
-        file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      (file) => {
+        const extension = file.name.split('.').pop().toLowerCase();
+        return extension === 'pdf' || extension === 'docx';
+      }
     );
     const uniqueValidFiles = validFiles.filter(
       (newFile) => !resumes.some((existingFile) => existingFile.name === newFile.name)
@@ -63,26 +82,34 @@ function App() {
 
   const handleJDDragOver = (e) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsJDUploadDragOver(true);
   };
 
   const handleJDDragLeave = (e) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsJDUploadDragOver(false);
   };
 
   const handleJDDrop = (e) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsJDUploadDragOver(false);
+    console.log('JD files dropped:', e.dataTransfer.files); // Debug log
     const droppedFiles = Array.from(e.dataTransfer.files);
     const validFiles = droppedFiles.filter(
-      (file) =>
-        file.type === "application/pdf" ||
-        file.type === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      (file) => {
+        const extension = file.name.split('.').pop().toLowerCase();
+        return extension === 'pdf' || extension === 'docx';
+      }
     );
     if (validFiles.length > 0) {
-      setJobDescriptionFile(validFiles[0]);
+      setJobDescriptionFile({ ...validFiles[0] }); // Create new object for state update
       setError(null);
+      if (jdInputRef.current) {
+        jdInputRef.current.value = ''; // Clear input
+      }
     } else {
       setError('Please drop a valid PDF or DOCX file for the job description.');
     }
@@ -162,11 +189,10 @@ function App() {
   };
 
   const getScoreColor = (score) => {
-  if (score >= 70) return 'text-green-600 bg-green-50';
-  else if (score >= 50) return 'text-yellow-600 bg-yellow-50';
-  else return 'text-red-600 bg-red-50';
-};
-
+    if (score >= 70) return 'text-green-600 bg-green-50';
+    else if (score >= 50) return 'text-yellow-600 bg-yellow-50';
+    else return 'text-red-600 bg-red-50';
+  };
 
   const sortByScore = () => {
     setResults((prevResults) => {
@@ -225,7 +251,9 @@ function App() {
                     multiple
                     accept=".pdf,.docx"
                     onChange={handleFileChange}
-                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
+                    id="resume-upload"
+                    name="resume-upload"
                   />
                   <Upload className="w-8 h-8 mx-auto mb-4 text-blue-600" />
                   <p className="text-lg font-semibold text-blue-600 mb-2">
@@ -317,7 +345,10 @@ function App() {
                       type="file"
                       accept=".pdf,.docx"
                       onChange={handleJDFileChange}
-                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-10"
+                      className="absolute inset-0 w-full h-full opacity-0 cursor-pointer z-20"
+                      id="jd-upload"
+                      name="jd-upload"
+                      ref={jdInputRef}
                     />
                     <Upload className="w-6 h-6 mx-auto mb-2 text-blue-600" />
                     <p className="text-sm font-semibold text-blue-600 mb-1">
@@ -408,8 +439,8 @@ function App() {
                   <thead>
                     <tr className="bg-blue-50 border-b border-blue-200">
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Name</th>
-                      <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">HR Score</th>
-                      <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">HR Issues</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Technical Score /100</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Weakness</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Projects</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Summary</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Status</th>

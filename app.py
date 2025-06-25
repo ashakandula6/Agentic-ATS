@@ -2,7 +2,6 @@ from flask import Flask, request, render_template, jsonify, send_from_directory
 import uuid
 import os
 import logging
-import re
 from dotenv import load_dotenv
 from werkzeug.utils import secure_filename
 from document_parser import parse_document
@@ -28,57 +27,42 @@ load_dotenv()
 logger.info("Environment variables loaded: GOOGLE_API_KEY present=%s", "GOOGLE_API_KEY" in os.environ)
 
 # Initialize MongoDB connection
+mongo_client = None
 try:
-    client = MongoClient(os.getenv("MONGO_URI"))
-    db = client["ats_system"]
+    mongo_client = MongoClient(os.getenv("MONGO_URI"), serverSelectionTimeoutMS=5000)
+    db = mongo_client["ats_system"]
     resume_collection = db["resumes"]
     logger.info("MongoDB connection successful.")
 except Exception as e:
     logger.error(f"MongoDB connection failed: {e}")
-    exit(1)
+    # Continue without MongoDB instead of exiting
 
 # Configure Google Gemini API
 try:
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    model = genai.GenerativeModel("gemini-1.5-flash")
+    model = genai.GenerativeModel("gemini-2.5-flash-lite-preview-06-17")
     logger.info("Google Gemini API configured successfully.")
 except Exception as e:
     logger.error(f"Failed to configure Gemini API: {e}")
     exit(1)
 
-def extract_required_experience(job_description: str) -> int:
-    """
-    Extract required years of experience from the job description using regex.
-    Looks for patterns like 'X years of experience', 'X+ years', etc.
-    Returns 0 if no experience requirement is found.
-    """
-    patterns = [
-        r'(\d+)\s*(?:\+|-)?\s*(?:years?|yrs?)\s*(?:of\s*)?(?:experience)',  # e.g., '3 years of experience', '5+ years'
-        r'(\d+)-(\d+)\s*(?:years?|yrs?)\s*(?:of\s*)?(?:experience)'         # e.g., '3-5 years of experience'
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, job_description, re.IGNORECASE)
-        if match:
-            if pattern == patterns[1]:  # Range like '3-5 years'
-                lower, upper = int(match.group(1)), int(match.group(2))
-                return lower  # Take the lower bound as the minimum requirement
-            else:  # Single value like '3 years'
-                return int(match.group(1))
-    
-    logger.warning("No experience requirement found in job description, defaulting to 0 years.")
-    return 0
-
 def store_resume_in_mongo(resume_id: str, masked_text: str, mappings: dict, collection_id: str) -> dict:
+    if mongo_client is None:
+        logger.warning("MongoDB not available, skipping storage")
+        return {"resume_id": resume_id, "status": "skipped"}
     resume_data = {
         "resume_id": resume_id,
         "masked_text": masked_text,
         "pii_mappings": mappings,
         "pii_collection_id": collection_id,
     }
-    resume_collection.insert_one(resume_data)
-    logger.info(f"Stored resume with ID: {resume_id}")
-    return resume_data
+    try:
+        resume_collection.insert_one(resume_data)
+        logger.info(f"Stored resume with ID: {resume_id}")
+        return resume_data
+    except Exception as e:
+        logger.error(f"Failed to store resume in MongoDB: {e}")
+        return {"resume_id": resume_id, "status": "failed"}
 
 def get_candidate_name(masked_text: str) -> str:
     try:
@@ -116,13 +100,16 @@ def index():
     static_css_path = os.path.join(app.static_folder, 'css')
     
     if os.path.exists(static_js_path):
-        js_files = [f for f in os.listdir(static_js_path) if f.endswith('.js') and 'main.' in f]
+        js_files = [f for f in os.listdir(static_js_path) if f.endswith('.js')]
+        if not js_files:
+            logger.warning("No .js files found in static/js, falling back to default")
+            js_files = ['main.js']
     if os.path.exists(static_css_path):
-        css_files = [f for f in os.listdir(static_css_path) if f.endswith('.css') and 'main.' in f]
+        css_files = [f for f in os.listdir(static_css_path) if f.endswith('.css')]
     
     if not js_files:
-        logger.error("No main.js file found in static/js")
-        return jsonify({"error": "No main.js file found"}), 500
+        logger.error("No JavaScript files found in static/js")
+        return jsonify({"error": "No JavaScript files found"}), 500
     
     import time
     cache_buster = int(time.time())
@@ -161,8 +148,6 @@ def analyze_resumes():
             else:
                 return jsonify({"error": "No valid job description provided"}), 400
 
-        # Extract required experience from job description
-        required_experience = extract_required_experience(job_description)
         results = []
 
         if not os.path.exists(app.config['UPLOAD_FOLDER']):
@@ -182,8 +167,8 @@ def analyze_resumes():
                 masked_text, mappings, collection_id = mask_text(resume_text)
                 candidate_name = get_candidate_name(masked_text)
                 resume_id = str(uuid.uuid4())
-                store_resume_in_mongo(resume_id, masked_text, mappings, collection_id)
-                result = analyze_resume(masked_text, job_description, required_experience, projects)
+                store_resume_in_mongo(resume_id, masked_text, mappings, collection_id)  # Non-critical operation
+                result = analyze_resume(masked_text, job_description, projects)
                 
                 results.append({
                     "resume_name": filename,
