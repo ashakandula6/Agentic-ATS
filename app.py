@@ -40,7 +40,7 @@ except Exception as e:
 # Configure Google Gemini API
 try:
     genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    model = genai.GenerativeModel("gemini-2.5-flash-lite-preview-06-17")
+    model = genai.GenerativeModel("gemini-2.5-flash")
     logger.info("Google Gemini API configured successfully.")
 except Exception as e:
     logger.error(f"Failed to configure Gemini API: {e}")
@@ -162,18 +162,19 @@ def analyze_resumes():
                 
                 with open(resume_path, 'rb') as f:
                     resume_data = parse_document(f, filename)
-                    resume_text = resume_data["full_text"]
-                    projects = resume_data["projects"]
+                    resume_text = resume_data.get("full_text", "")
+                    projects = resume_data.get("projects", [])
                 masked_text, mappings, collection_id = mask_text(resume_text)
                 candidate_name = get_candidate_name(masked_text)
                 resume_id = str(uuid.uuid4())
-                store_resume_in_mongo(resume_id, masked_text, mappings, collection_id)  # Non-critical operation
+                store_resume_in_mongo(resume_id, masked_text, mappings, collection_id)
                 result = analyze_resume(masked_text, job_description, projects)
                 
                 results.append({
                     "resume_name": filename,
                     "candidate_name": candidate_name,
-                    "score": result["score"],
+                    "technical_score": result["technical_score"],
+                    "proficiency_score": result["proficiency_score"],
                     "pain_points": result["pain_points"],
                     "summary": result["summary"],
                     "status": result["status"],

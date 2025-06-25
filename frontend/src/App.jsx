@@ -13,7 +13,7 @@ function App() {
   const [analyzeClicked, setAnalyzeClicked] = useState(false);
   const [isResumeDragOver, setIsResumeDragOver] = useState(false);
   const [isJDUploadDragOver, setIsJDUploadDragOver] = useState(false);
-  const jdInputRef = useRef(null); // Ref to clear JD input
+  const jdInputRef = useRef(null);
 
   const handleFileChange = (e) => {
     const newFiles = Array.from(e.target.files);
@@ -21,11 +21,11 @@ function App() {
       (newFile) => !resumes.some((existingFile) => existingFile.name === newFile.name)
     );
     setResumes((prev) => [...prev, ...uniqueNewFiles]);
-    e.target.value = ''; // Clear input to allow re-upload of same files
+    e.target.value = '';
   };
 
   const handleJDFileChange = (e) => {
-    console.log('JD file input changed:', e.target.files); // Debug log
+    console.log('JD file input changed:', e.target.files);
     const file = e.target.files[0];
     if (!file) {
       setError('No file selected.');
@@ -35,9 +35,9 @@ function App() {
     if (extension === 'pdf' || extension === 'docx') {
       setJobDescriptionFile(file);
       setError(null);
-      e.target.value = ''; // Clear input
+      e.target.value = '';
       if (jdInputRef.current) {
-        jdInputRef.current.value = ''; // Clear ref
+        jdInputRef.current.value = '';
       }
     } else {
       setError('Please upload a valid PDF or DOCX file for the job description.');
@@ -47,7 +47,7 @@ function App() {
   const removeJDFile = () => {
     setJobDescriptionFile(null);
     if (jdInputRef.current) {
-      jdInputRef.current.value = ''; // Clear input
+      jdInputRef.current.value = '';
     }
   };
 
@@ -96,7 +96,7 @@ function App() {
     e.preventDefault();
     e.stopPropagation();
     setIsJDUploadDragOver(false);
-    console.log('JD files dropped:', e.dataTransfer.files); // Debug log
+    console.log('JD files dropped:', e.dataTransfer.files);
     const droppedFiles = Array.from(e.dataTransfer.files);
     const validFiles = droppedFiles.filter(
       (file) => {
@@ -105,10 +105,10 @@ function App() {
       }
     );
     if (validFiles.length > 0) {
-      setJobDescriptionFile({ ...validFiles[0] }); // Create new object for state update
+      setJobDescriptionFile({ ...validFiles[0] });
       setError(null);
       if (jdInputRef.current) {
-        jdInputRef.current.value = ''; // Clear input
+        jdInputRef.current.value = '';
       }
     } else {
       setError('Please drop a valid PDF or DOCX file for the job description.');
@@ -194,9 +194,15 @@ function App() {
     else return 'text-red-600 bg-red-50';
   };
 
+  const getProficiencyColor = (score) => {
+    if (score >= 20) return 'text-green-600 bg-green-50';
+    else if (score >= 10) return 'text-yellow-600 bg-yellow-50';
+    else return 'text-red-600 bg-red-50';
+  };
+
   const sortByScore = () => {
     setResults((prevResults) => {
-      const sortedResults = [...prevResults].sort((a, b) => b.score - a.score);
+      const sortedResults = [...prevResults].sort((a, b) => b.technical_score - a.technical_score);
       const newVisibleContent = {};
       sortedResults.forEach((_, index) => {
         newVisibleContent[`pain-points-${index}`] = visibleContent[`pain-points-${index}`] || false;
@@ -211,7 +217,6 @@ function App() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-white to-blue-50 p-4">
       <div className="max-w-7xl mx-auto space-y-8">
-        {/* Header */}
         <div className="text-center space-y-2">
           <div className="flex items-center justify-center gap-2 mb-4">
             <div className="w-8 h-8 bg-red-500 rounded-full flex items-center justify-center">
@@ -224,9 +229,7 @@ function App() {
           </p>
         </div>
 
-        {/* Main Content */}
         <div className="grid lg:grid-cols-2 gap-8">
-          {/* File Upload Section */}
           <div className="space-y-6">
             <div className="bg-white rounded-xl shadow-lg border border-blue-100 overflow-hidden">
               <div className="bg-gradient-to-r from-blue-50 to-blue-100 px-6 py-4 border-b border-blue-200">
@@ -297,7 +300,6 @@ function App() {
             </div>
           </div>
 
-          {/* Job Requirements Section */}
           <div className="space-y-6">
             <div className="bg-white rounded-xl shadow-lg border border-blue-100 overflow-hidden">
               <div className="bg-gradient-to-r from-orange-50 to-orange-100 px-6 py-4 border-b border-orange-200">
@@ -408,7 +410,6 @@ function App() {
           </div>
         </div>
 
-        {/* Error Message */}
         {error && (
           <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
             <div className="flex items-center gap-2">
@@ -418,9 +419,7 @@ function App() {
           </div>
         )}
 
-        {/* Results Section */}
         <div className="space-y-6">
-          {/* Analysis Results Header */}
           <div className="bg-gradient-to-r from-blue-50 to-blue-100 border-2 border-blue-200 rounded-xl p-6">
             <div className="text-center">
               <div className="flex items-center justify-center gap-2 mb-2">
@@ -431,7 +430,6 @@ function App() {
             </div>
           </div>
 
-          {/* Results Table */}
           {results.length > 0 ? (
             <div className="bg-white rounded-xl shadow-lg border border-blue-100 overflow-hidden">
               <div className="overflow-x-auto">
@@ -440,6 +438,7 @@ function App() {
                     <tr className="bg-blue-50 border-b border-blue-200">
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Name</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Technical Score /100</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Proficiency Score /30</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Weakness</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Projects</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Summary</th>
@@ -452,8 +451,13 @@ function App() {
                       <tr key={index} className="border-b border-blue-100 hover:bg-blue-50 transition-colors">
                         <td className="px-6 py-4 font-medium text-gray-900">{result.candidate_name}</td>
                         <td className="px-6 py-4">
-                          <span className={`px-3 py-1 rounded-full text-sm font-bold ${getScoreColor(result.score)}`}>
-                            {result.score}%
+                          <span className={`px-3 py-1 rounded-full text-sm font-bold ${getScoreColor(result.technical_score)}`}>
+                            {result.technical_score}%
+                          </span>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span className={`px-3 py-1 rounded-full text-sm font-bold ${getProficiencyColor(result.proficiency_score)}`}>
+                            {result.proficiency_score}/30
                           </span>
                         </td>
                         <td className="px-6 py-4">
