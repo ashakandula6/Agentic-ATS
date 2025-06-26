@@ -155,8 +155,7 @@ function App() {
       setResults(results);
       const initialVisibility = {};
       results.forEach((_, index) => {
-        initialVisibility[`pain-points-${index}`] = false;
-        initialVisibility[`summary-${index}`] = false;
+        initialVisibility[`strengths-weaknesses-${index}`] = false;
         initialVisibility[`projects-${index}`] = false;
       });
       setVisibleContent(initialVisibility);
@@ -205,8 +204,7 @@ function App() {
       const sortedResults = [...prevResults].sort((a, b) => b.technical_score - a.technical_score);
       const newVisibleContent = {};
       sortedResults.forEach((_, index) => {
-        newVisibleContent[`pain-points-${index}`] = visibleContent[`pain-points-${index}`] || false;
-        newVisibleContent[`summary-${index}`] = visibleContent[`summary-${index}`] || false;
+        newVisibleContent[`strengths-weaknesses-${index}`] = visibleContent[`strengths-weaknesses-${index}`] || false;
         newVisibleContent[`projects-${index}`] = visibleContent[`projects-${index}`] || false;
       });
       setVisibleContent(newVisibleContent);
@@ -439,9 +437,8 @@ function App() {
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Name</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Technical Score /100</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Proficiency Score /30</th>
-                      <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Weakness</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Strengths/Weakness</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Projects</th>
-                      <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Summary</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Status</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Resume</th>
                     </tr>
@@ -463,47 +460,35 @@ function App() {
                         <td className="px-6 py-4">
                           <button
                             className="bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-lg px-3 py-1 text-sm hover:from-blue-700 hover:to-blue-800 transition-all duration-300 flex items-center gap-1"
-                            onClick={() => toggleContent(`pain-points-${index}`)}
+                            onClick={() => toggleContent(`strengths-weaknesses-${index}`)}
                           >
                             <Eye className="w-3 h-3" />
                             View
                           </button>
-                          {visibleContent[`pain-points-${index}`] && (
+                          {visibleContent[`strengths-weaknesses-${index}`] && (
                             <div className="mt-2 bg-gray-50 rounded-lg p-3">
                               <div className="text-sm text-gray-700 space-y-2">
                                 <div>
-                                  <strong className="text-red-600">Critical Issues:</strong>
+                                  <strong className="text-green-600">Strengths:</strong>
                                   <ul className="list-disc pl-5">
-                                    {result.pain_points.critical.length > 0 ? (
-                                      result.pain_points.critical.map((point, i) => (
-                                        <li key={i}>{point}</li>
+                                    {result.strengths_weaknesses.strengths.length > 0 ? (
+                                      result.strengths_weaknesses.strengths.map((strength, i) => (
+                                        <li key={i}>{strength}</li>
                                       ))
                                     ) : (
-                                      <li>None identified.</li>
+                                      <li>No strengths identified.</li>
                                     )}
                                   </ul>
                                 </div>
                                 <div>
-                                  <strong className="text-yellow-600">Major Issues:</strong>
+                                  <strong className="text-red-600">Weaknesses:</strong>
                                   <ul className="list-disc pl-5">
-                                    {result.pain_points.major.length > 0 ? (
-                                      result.pain_points.major.map((point, i) => (
-                                        <li key={i}>{point}</li>
+                                    {result.strengths_weaknesses.weaknesses.length > 0 ? (
+                                      result.strengths_weaknesses.weaknesses.map((weakness, i) => (
+                                        <li key={i}>{weakness}</li>
                                       ))
                                     ) : (
-                                      <li>None identified.</li>
-                                    )}
-                                  </ul>
-                                </div>
-                                <div>
-                                  <strong className="text-blue-600">Minor Issues:</strong>
-                                  <ul className="list-disc pl-5">
-                                    {result.pain_points.minor.length > 0 ? (
-                                      result.pain_points.minor.map((point, i) => (
-                                        <li key={i}>{point}</li>
-                                      ))
-                                    ) : (
-                                      <li>None identified.</li>
+                                      <li>No weaknesses identified.</li>
                                     )}
                                   </ul>
                                 </div>
@@ -535,20 +520,6 @@ function App() {
                                   <p>No projects identified in the resume.</p>
                                 )}
                               </div>
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-6 py-4">
-                          <button
-                            className="bg-gradient-to-r from-blue-600 to-blue-700 text-white rounded-lg px-3 py-1 text-sm hover:from-blue-700 hover:to-blue-800 transition-all duration-300 flex items-center gap-1"
-                            onClick={() => toggleContent(`summary-${index}`)}
-                          >
-                            <Eye className="w-3 h-3" />
-                            View
-                          </button>
-                          {visibleContent[`summary-${index}`] && (
-                            <div className="mt-2 bg-gray-50 rounded-lg p-3 text-sm text-gray-700">
-                              {result.summary}
                             </div>
                           )}
                         </td>

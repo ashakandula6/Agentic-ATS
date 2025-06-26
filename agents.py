@@ -22,12 +22,13 @@ except Exception as e:
     logger.error(f"Failed to configure Gemini API: {e}")
     raise
 
-# Rate limiter for LLM calls (10 RPM = 6 seconds per request)
+# Rate limiter for LLM calls (10 RPM = 6 seconds minimum per request, with dynamic adjustment)
 class RateLimiter:
     def __init__(self, requests_per_minute: int = 10, period: int = 60):
         self.requests_per_minute = requests_per_minute
         self.period = period
         self.requests = deque(maxlen=requests_per_minute)
+        self.last_request_time = 0
         logger.info(f"Initialized RateLimiter with {requests_per_minute} requests per {period} seconds")
 
     def acquire(self):
@@ -35,13 +36,20 @@ class RateLimiter:
         while self.requests and current_time - self.requests[0] > self.period:
             self.requests.popleft()
         if len(self.requests) >= self.requests_per_minute:
-            sleep_time = self.period - (current_time - self.requests[0])
+            sleep_time = max(6, self.period - (current_time - self.requests[0]))  # Minimum 6s, adjust dynamically
             logger.debug(f"Rate limit reached, waiting {sleep_time:.2f} seconds")
             time.sleep(sleep_time)
             current_time = time.time()
             while self.requests and current_time - self.requests[0] > self.period:
                 self.requests.popleft()
+        # Ensure at least 6 seconds between requests
+        if self.last_request_time > 0:
+            elapsed = current_time - self.last_request_time
+            if elapsed < 6:
+                time.sleep(6 - elapsed)
+                current_time = time.time()
         self.requests.append(current_time)
+        self.last_request_time = current_time
         logger.debug(f"LLM call allowed, {len(self.requests)}/{self.requests_per_minute} requests in queue")
 
 # Initialize rate limiter
@@ -148,16 +156,30 @@ def extract_projects_from_resume(resume_text: str) -> List[Dict]:
                     project['skills'] = [normalize_skill(skill) for skill in project.get('skills', [])]
                 logger.info(f"Extracted {len(projects)} projects from resume")
                 return projects
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error on attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(8)  # Respect retry delay from rate limit
+                    continue
+                raise
             except Exception as e:
                 if "rate limit" in str(e).lower() and attempt < max_retries - 1:
-                    logger.warning(f"Rate limit error on attempt {attempt + 1}, retrying...")
-                    time.sleep(6 * (attempt + 1))
+                    retry_delay = self._extract_retry_delay(e) or 8
+                    logger.warning(f"Rate limit error on attempt {attempt + 1}, retrying after {retry_delay} seconds...")
+                    time.sleep(retry_delay)
                     continue
                 logger.error(f"Failed to extract projects using LLM: {e}")
                 raise
     except Exception as e:
         logger.error(f"Failed to extract projects after retries: {e}")
         return extract_projects_fallback(resume_text)
+
+    def _extract_retry_delay(self, exception):
+        if hasattr(exception, 'message') and "retry_delay" in exception.message:
+            import re
+            match = re.search(r"retry_delay\s*{\s*seconds:\s*(\d+)", exception.message)
+            return int(match.group(1)) if match else None
+        return None
 
 def extract_projects_fallback(resume_text: str) -> List[Dict]:
     projects = []
@@ -171,9 +193,10 @@ def extract_projects_fallback(resume_text: str) -> List[Dict]:
             for match in matches:
                 start_pos = match.end()
                 next_section = re.search(r'(?i)\n\s*(?:experience|education|skills|certifications?|achievements?|awards?)\s*[:\-]?\s*\n', resume_text[start_pos:])
-                end_pos = start_pos + next_section.start() if next_section else len(resume_text)
+                end_pos = start_post + next_section.start() if next_section else len(resume_text)
                 projects_text = resume_text[start_pos:end_pos]
                 projects.extend(parse_projects_text(projects_text))
+    devices = list(dict.fromkeys(projects))
     for project in projects:
         project['skills'] = [normalize_skill(skill) for skill in project.get('skills', [])]
     if not projects:
@@ -240,7 +263,7 @@ def extract_nice_to_have_skills_from_jd(job_description: str) -> List[str]:
         
         **OUTPUT FORMAT - Return ONLY valid JSON:**
         {{
-            "nice_to_have_skills": ["<skill1>", "<skill2>", "<skill3>", ...]
+            "nice_to have_skills": ["<skill1>", "<skill2>", "<skill3>", ...]
         }}
         """
         max_retries = 3
@@ -257,10 +280,17 @@ def extract_nice_to_have_skills_from_jd(job_description: str) -> List[str]:
                 normalized_skills = [normalize_skill(skill) for skill in skills]
                 logger.info(f"Extracted {len(normalized_skills)} nice-to-have skills from JD: {normalized_skills}")
                 return normalized_skills
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error on attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(8)  # Respect retry delay from rate limit
+                    continue
+                raise
             except Exception as e:
                 if "rate limit" in str(e).lower() and attempt < max_retries - 1:
-                    logger.warning(f"Rate limit error on attempt {attempt + 1}, retrying...")
-                    time.sleep(6 * (attempt + 1))
+                    retry_delay = self._extract_retry_delay(e) or 8
+                    logger.warning(f"Rate limit error on attempt {attempt + 1}, retrying after {retry_delay} seconds...")
+                    time.sleep(retry_delay)
                     continue
                 logger.error(f"Failed to extract nice-to-have skills using LLM: {e}")
                 raise
@@ -409,10 +439,17 @@ def calculate_proficiency_score(resume_text: str, job_description: str, projects
                 resume_quality_score = min(8, quality_result.get("total", 0))
                 logger.debug(f"Resume quality score: {resume_quality_score}, Details: {quality_result}")
                 break
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error on attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(8)
+                    continue
+                raise
             except Exception as e:
                 if "rate limit" in str(e).lower() and attempt < max_retries - 1:
-                    logger.warning(f"Rate limit error on attempt {attempt + 1}, retrying...")
-                    time.sleep(6 * (attempt + 1))
+                    retry_delay = self._extract_retry_delay(e) or 8
+                    logger.warning(f"Rate limit error on attempt {attempt + 1}, retrying after {retry_delay} seconds...")
+                    time.sleep(retry_delay)
                     continue
                 logger.error(f"Failed to calculate resume quality score: {e}")
                 raise
@@ -455,10 +492,17 @@ def calculate_proficiency_score(resume_text: str, job_description: str, projects
                 experience_score = min(8, experience_result.get("total", 0))
                 logger.debug(f"Experience alignment score: {experience_score}, Details: {experience_result}")
                 break
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error on attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(8)
+                    continue
+                raise
             except Exception as e:
                 if "rate limit" in str(e).lower() and attempt < max_retries - 1:
-                    logger.warning(f"Rate limit error on attempt {attempt + 1}, retrying...")
-                    time.sleep(6 * (attempt + 1))
+                    retry_delay = self._extract_retry_delay(e) or 8
+                    logger.warning(f"Rate limit error on attempt {attempt + 1}, retrying after {retry_delay} seconds...")
+                    time.sleep(retry_delay)
                     continue
                 logger.error(f"Failed to calculate experience alignment score: {e}")
                 raise
@@ -521,10 +565,17 @@ def extract_mandatory_skills_from_jd(job_description: str) -> List[str]:
                 normalized_skills = [normalize_skill(skill) for skill in skills]
                 logger.info(f"Extracted {len(normalized_skills)} mandatory skills from JD: {normalized_skills}")
                 return normalized_skills
+            except json.JSONDecodeError as e:
+                logger.error(f"JSON decode error on attempt {attempt + 1}: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(8)
+                    continue
+                raise
             except Exception as e:
                 if "rate limit" in str(e).lower() and attempt < max_retries - 1:
-                    logger.warning(f"Rate limit error on attempt {attempt + 1}, retrying...")
-                    time.sleep(6 * (attempt + 1))
+                    retry_delay = self._extract_retry_delay(e) or 8
+                    logger.warning(f"Rate limit error on attempt {attempt + 1}, retrying after {retry_delay} seconds...")
+                    time.sleep(retry_delay)
                     continue
                 logger.error(f"Failed to extract mandatory skills using LLM: {e}")
                 raise
@@ -535,7 +586,7 @@ def extract_mandatory_skills_from_jd(job_description: str) -> List[str]:
 def extract_mandatory_skills_fallback(job_description: str) -> List[str]:
     mandatory_skills = []
     mandatory_patterns = [
-        r'(?:required|must have|essential|mandatory|must-have)\s*[:\s]*(.*?)(?=\n[A-Z][a-zA-Z\s]+:|\n\n|\Z)',
+        r'(?:required|must have|essential|mandatory|must-have)\s*[:\s]*(.*?)(?=\n[A-Z][a-zA-Z\s]+:|\[A-Z][a-zA-Z\s]+:|\n\n|\Z)',
         r'(?:requirements?|qualifications?)\s*[:\s]*(.*?)(?=\n[A-Z][a-zA-Z\s]+:|\n\n|\Z)'
     ]
     for pattern in mandatory_patterns:
@@ -572,11 +623,14 @@ def match_project_skills_to_mandatory(projects: List[Dict], mandatory_skills: Li
         matched_skills_for_project = []
         for mandatory_skill in mandatory_skills:
             normalized_mandatory = normalize_skill(mandatory_skill)
+            skill_found = False
             for project_skill in project_skills:
                 if fuzz.ratio(normalized_mandatory, normalize_skill(project_skill)) > 80:
-                    matched_skills_for_project.append(mandatory_skill)
-                    all_matched_skills.add(mandatory_skill)
-                    current_weight += skill_weights.get(normalized_mandatory, 1)
+                    if mandatory_skill not in all_matched_skills:  # Only count once across all projects
+                        matched_skills_for_project.append(mandatory_skill)
+                        all_matched_skills.add(mandatory_skill)
+                        current_weight += skill_weights.get(normalized_mandatory, 1)
+                    skill_found = True
                     break
         if matched_skills_for_project:
             matched_projects.append({
@@ -599,35 +653,91 @@ def enhanced_technical_analysis(resume_text: str, job_description: str) -> Dict:
     logger.info(f"Extracted {len(mandatory_skills)} mandatory skills from JD")
     matched_projects, matched_skills, technical_score = match_project_skills_to_mandatory(projects, mandatory_skills)
     proficiency_score = calculate_proficiency_score(resume_text, job_description, projects)
+    nice_to_have_skills = extract_nice_to_have_skills_from_jd(job_description)
+    soft_skills = extract_soft_skills(resume_text)
+    certifications = extract_certifications(resume_text)
+
+    # Identify strengths and weaknesses
+    strengths = []
+    weaknesses = []
     missing_skills = [skill for skill in mandatory_skills if skill not in matched_skills]
-    pain_points = {
-        "critical": [],
-        "major": [],
-        "minor": []
-    }
+
+    # Calculate matched nice-to-have skills
+    matched_nice_skills = []
+    for skill in nice_to_have_skills:
+        for project in projects:
+            if any(fuzz.ratio(normalize_skill(skill), normalize_skill(ps)) > 80 for ps in project.get("skills", [])):
+                matched_nice_skills.append(skill)
+                break
+
+    # Strengths - only add if actually present
+    if matched_skills:
+        skill_list = ', '.join(matched_skills[:3]) + ('...' if len(matched_skills) > 3 else '')
+        strengths.append(f"Proficient in mandatory skills: {skill_list}")
+
+    if matched_nice_skills:
+        nice_skill_list = ', '.join(matched_nice_skills[:3]) + ('...' if len(matched_nice_skills) > 3 else '')
+        strengths.append(f"Additional nice-to-have skills: {nice_skill_list}")
+
+    if matched_projects:
+        strengths.append(f"Strong project alignment: {len(matched_projects)} project(s) match JD requirements")
+
+    matched_soft_skills = [skill for skill in soft_skills if skill.lower() in ['problem-solving', 'communication', 'collaboration', 'analytical thinking']]
+    if matched_soft_skills:
+        soft_skill_list = ', '.join(matched_soft_skills[:3]) + ('...' if len(matched_soft_skills) > 3 else '')
+        strengths.append(f"Relevant soft skills: {soft_skill_list}")
+
+    relevant_certs = [cert for cert in certifications if any(keyword in cert.lower() for keyword in ['ai', 'data science', 'machine learning', 'cloud', 'aws', 'azure', 'gcp'])]
+    if relevant_certs:
+        cert_list = ', '.join(relevant_certs[:2]) + ('...' if len(relevant_certs) > 2 else '')
+        strengths.append(f"Relevant certifications: {cert_list}")
+
+    # Weaknesses - be more specific
     if missing_skills:
-        pain_points["critical"].append(f"Missing mandatory technical skills: {', '.join(missing_skills[:5])}")
-        if len(missing_skills) > 5:
-            pain_points["critical"].append(f"And {len(missing_skills) - 5} more missing skills")
+        missing_skill_list = ', '.join(missing_skills[:3]) + ('...' if len(missing_skills) > 3 else '')
+        weaknesses.append(f"Missing mandatory skills: {missing_skill_list}")
+
     if not matched_projects:
-        pain_points["critical"].append("No projects found with mandatory technical skills")
-    elif len(matched_projects) < len(projects) // 2:
-        pain_points["major"].append("Limited project alignment with mandatory requirements")
-    if technical_score >= 70:
-        pain_points["minor"].append("Strong technical alignment - recommend advanced technical interview")
-    elif technical_score >= 50:
-        pain_points["minor"].append("Moderate alignment - focus interview on missing skills")
+        weaknesses.append("No projects demonstrate mandatory technical skills")
+    elif len(matched_projects) < max(1, len(projects) // 2):
+        weaknesses.append("Limited project alignment with job requirements")
+
+    # More granular proficiency scoring feedback
+    if proficiency_score < 20:
+        if proficiency_score < 10:
+            weaknesses.append("Significant gaps in experience quality, certifications, and additional skills")
+        else:
+            weaknesses.append("Some gaps in experience depth or additional qualifications")
+
+    # Ensure we always have at least one strength or weakness for better feedback
+    if not strengths and not weaknesses:
+        if technical_score > 50:
+            strengths.append("Basic technical requirements partially met")
+        else:
+            weaknesses.append("Limited alignment with technical requirements")
+
+    # Coverage-based weakness
+    coverage_percentage = int((len(matched_skills) / max(len(mandatory_skills), 1)) * 100)
+    if coverage_percentage < 70 and mandatory_skills:
+        weaknesses.append(f"Only {coverage_percentage}% of mandatory skills demonstrated")
+
+    strengths_weaknesses = {
+        "strengths": strengths,
+        "weaknesses": weaknesses
+    }
+
+    # More nuanced status determination
+    if technical_score >= 80 and proficiency_score >= 20 and len(missing_skills) <= 1:
+        status = "Shortlisted"
+    elif technical_score >= 60 and proficiency_score >= 15:
+        status = "Under Consideration"
     else:
-        pain_points["minor"].append("Significant gaps - consider extensive technical assessment")
-    if proficiency_score < 10:
-        pain_points["major"].append("Low proficiency score indicates gaps in experience or resume quality")
-    status = "Shortlisted" if technical_score >= 70 and proficiency_score >= 20 else "Under Consideration" if technical_score >= 50 else "Rejected"
-    summary = generate_enhanced_technical_summary(technical_score, len(matched_projects), len(projects), len(matched_skills), len(mandatory_skills), missing_skills)
+        status = "Rejected"
+    
     result = {
         "technical_score": technical_score,
         "proficiency_score": proficiency_score,
-        "pain_points": pain_points,
-        "summary": summary,
+        "strengths_weaknesses": strengths_weaknesses,
         "status": status,
         "projects": matched_projects,
         "extraction_stats": {
@@ -641,45 +751,15 @@ def enhanced_technical_analysis(resume_text: str, job_description: str) -> Dict:
     logger.info(f"Enhanced technical analysis completed - Technical Score: {technical_score}, Proficiency Score: {proficiency_score}")
     return result
 
-def generate_enhanced_technical_summary(score: int, matched_projects: int, total_projects: int, 
-                                       matched_skills: int, total_mandatory: int, missing_skills: List[str]) -> str:
-    summary_parts = []
-    if score >= 70:
-        summary_parts.append(f"Excellent technical alignment with {matched_skills}/{total_mandatory} mandatory skills in {matched_projects} projects.")
-    elif score >= 50:
-        summary_parts.append(f"Moderate technical fit with {matched_skills}/{total_mandatory} mandatory skills in {matched_projects} projects.")
-    else:
-        summary_parts.append(f"Limited technical alignment with {matched_skills}/{total_mandatory} mandatory skills in {matched_projects} projects.")
-    if matched_projects > 0:
-        summary_parts.append(f"Projects cover {matched_projects}/{total_projects} relevant technologies.")
-    else:
-        summary_parts.append("No projects found with mandatory skills, indicating skill gaps.")
-    if missing_skills:
-        summary_parts.append(f"Key gaps: {', '.join(missing_skills[:3])}{'...' if len(missing_skills) > 3 else ''}.")
-    if score >= 70:
-        summary_parts.append("Recommend advanced technical interview to validate project depth.")
-    elif score >= 50:
-        summary_parts.append("Interview should focus on missing skills and project claims.")
-    else:
-        summary_parts.append("Extensive assessment needed to evaluate skill gaps.")
-    return " ".join(summary_parts)
-
-def analyze_resume(resume_text: str, job_description: str, projects: List[Dict] = None) -> Dict:
-    try:
-        return enhanced_technical_analysis(resume_text, job_description)
-    except Exception as e:
-        logger.error(f"Enhanced analysis failed, falling back to original: {e}")
-        if projects is None:
-            projects = extract_projects_from_resume(resume_text)
-        return fallback_technical_score(resume_text, job_description, projects)
-
 def fallback_technical_score(resume_text: str, job_description: str, projects: List[Dict]) -> Dict:
     score = 0
-    pain_points_list = []
     matched_projects = []
     mandatory_skills = extract_mandatory_skills_fallback(job_description)
     logger.debug(f"Extracted mandatory technical skills: {mandatory_skills}")
     matched_tech_skills = []
+    nice_to_have_skills = extract_nice_to_have_skills_fallback(job_description)
+    soft_skills = extract_soft_skills(resume_text)
+    certifications = extract_certifications(resume_text)
     skill_weights = {
         'python': 3, 'r': 3, 'tensorflow': 3, 'pytorch': 3, 'scikit-learn': 3, 'pandas': 3, 'numpy': 3,
         'matplotlib': 3, 'nlp': 3, 'computer vision': 3, 'gpt': 3, 'bert': 3, 'dall-e': 3,
@@ -692,10 +772,14 @@ def fallback_technical_score(resume_text: str, job_description: str, projects: L
         matched_skills = []
         for skill in mandatory_skills:
             normalized_mandatory = normalize_skill(skill)
+            skill_found = False
             for ps in project_skills:
                 if fuzz.ratio(normalized_mandatory, normalize_skill(ps)) > 80:
-                    matched_skills.append(skill)
-                    current_weight += skill_weights.get(normalized_mandatory, 1)
+                    if skill not in matched_tech_skills:  # Only count once across all projects
+                        matched_skills.append(skill)
+                        matched_tech_skills.append(skill)
+                        current_weight += skill_weights.get(normalized_mandatory, 1)
+                    skill_found = True
                     break
         if matched_skills:
             matched_projects.append({
@@ -704,40 +788,94 @@ def fallback_technical_score(resume_text: str, job_description: str, projects: L
                 "skills": project_skills,
                 "relevance": f"Matches skills: {', '.join(matched_skills)}"
             })
-            matched_tech_skills.extend(matched_skills)
     matched_tech_skills = list(set(matched_tech_skills))
     score = int((current_weight / max(total_possible_weight, 1)) * 100) if mandatory_skills else 0
     score = min(100, max(0, score))
     proficiency_score = calculate_proficiency_score(resume_text, job_description, projects)
-    pain_points = {
-        "critical": [f"Missing mandatory technical skills: {', '.join([skill for skill in mandatory_skills if skill not in matched_tech_skills])}"] if len(matched_tech_skills) < len(mandatory_skills) else [],
-        "major": ["Low proficiency score indicates gaps in experience or resume quality"] if proficiency_score < 10 else [],
-        "minor": ["Needs further evaluation in interview"] if score >= 50 else []
+
+    # Identify strengths and weaknesses
+    strengths = []
+    weaknesses = []
+    missing_skills = [skill for skill in mandatory_skills if skill not in matched_tech_skills]
+    if matched_tech_skills:
+        skill_list = ', '.join(matched_tech_skills[:3]) + ('...' if len(matched_tech_skills) > 3 else '')
+        strengths.append(f"Proficient in mandatory skills: {skill_list}")
+
+    matched_nice_skills = []
+    for skill in nice_to_have_skills:
+        for project in projects:
+            if any(fuzz.ratio(normalize_skill(skill), normalize_skill(ps)) > 80 for ps in project.get("skills", [])):
+                matched_nice_skills.append(skill)
+                break
+    if matched_nice_skills:
+        nice_skill_list = ', '.join(matched_nice_skills[:3]) + ('...' if len(matched_nice_skills) > 3 else '')
+        strengths.append(f"Additional nice-to-have skills: {nice_skill_list}")
+
+    matched_soft_skills = [skill for skill in soft_skills if skill.lower() in ['problem-solving', 'communication', 'collaboration', 'analytical thinking']]
+    if matched_soft_skills:
+        soft_skill_list = ', '.join(matched_soft_skills[:3]) + ('...' if len(matched_soft_skills) > 3 else '')
+        strengths.append(f"Relevant soft skills: {soft_skill_list}")
+
+    relevant_certs = [cert for cert in certifications if any(keyword in cert.lower() for keyword in ['ai', 'data science', 'machine learning', 'cloud', 'aws', 'azure', 'gcp'])]
+    if relevant_certs:
+        cert_list = ', '.join(relevant_certs[:2]) + ('...' if len(relevant_certs) > 2 else '')
+        strengths.append(f"Relevant certifications: {cert_list}")
+
+    if matched_projects:
+        strengths.append(f"Strong project alignment: {len(matched_projects)} project(s) match JD requirements")
+
+    if missing_skills:
+        missing_skill_list = ', '.join(missing_skills[:3]) + ('...' if len(missing_skills) > 3 else '')
+        weaknesses.append(f"Missing mandatory skills: {missing_skill_list}")
+
+    if not matched_projects:
+        weaknesses.append("No projects demonstrate mandatory technical skills")
+    elif len(matched_projects) < max(1, len(projects) // 2):
+        weaknesses.append("Limited project alignment with job requirements")
+
+    if proficiency_score < 20:
+        if proficiency_score < 10:
+            weaknesses.append("Significant gaps in experience quality, certifications, and additional skills")
+        else:
+            weaknesses.append("Some gaps in experience depth or additional qualifications")
+
+    if not strengths and not weaknesses:
+        if score > 50:
+            strengths.append("Basic technical requirements partially met")
+        else:
+            weaknesses.append("Limited alignment with technical requirements")
+
+    coverage_percentage = int((len(matched_tech_skills) / max(len(mandatory_skills), 1)) * 100)
+    if coverage_percentage < 70 and mandatory_skills:
+        weaknesses.append(f"Only {coverage_percentage}% of mandatory skills demonstrated")
+
+    strengths_weaknesses = {
+        "strengths": strengths,
+        "weaknesses": weaknesses
     }
-    status = "Shortlisted" if score >= 70 and proficiency_score >= 20 else "Under Consideration" if score >= 50 else "Rejected"
-    summary = f"Technical score: {score}/100, Proficiency: {proficiency_score}/30. Covers {len(matched_tech_skills)}/{len(mandatory_skills)} mandatory skills. {'Strong fit; recommend interview.' if score >= 70 else 'Moderate fit; assess gaps.' if score >= 50 else 'Significant gaps; may need training.'}"
+
+    if score >= 80 and proficiency_score >= 20 and len(missing_skills) <= 1:
+        status = "Shortlisted"
+    elif score >= 60 and proficiency_score >= 15:
+        status = "Under Consideration"
+    else:
+        status = "Rejected"
+    
     result = {
         "technical_score": score,
         "proficiency_score": proficiency_score,
-        "pain_points": pain_points,
-        "summary": summary,
+        "strengths_weaknesses": strengths_weaknesses,
         "status": status,
         "projects": matched_projects
     }
     logger.info(f"Fallback technical assessment result: Technical Score: {score}, Proficiency Score: {proficiency_score}, Matched Skills: {matched_tech_skills}")
     return result
 
-def generate_technical_summary(score: int, pain_points: Dict) -> str:
-    summary_parts = []
-    if score >= 70:
-        summary_parts.append("Strong alignment with mandatory technical skills in projects.")
-    elif score >= 50:
-        summary_parts.append("Moderate alignment with some gaps in project skills.")
-    else:
-        summary_parts.append("Significant gaps in project-based mandatory skills.")
-    if pain_points.get("critical"):
-        summary_parts.append(f"Critical issues: {'; '.join(pain_points['critical'][:2])}.")
-    if pain_points.get("minor"):
-        summary_parts.append(f"Minor improvements: {'; '.join(pain_points['minor'][:2])}.")
-    summary_parts.append("Technical interview recommended to validate project skills.")
-    return " ".join(summary_parts)
+def analyze_resume(resume_text: str, job_description: str, projects: List[Dict] = None) -> Dict:
+    try:
+        return enhanced_technical_analysis(resume_text, job_description)
+    except Exception as e:
+        logger.error(f"Enhanced analysis failed, falling back to original: {e}")
+        if projects is None:
+            projects = extract_projects_from_resume(resume_text)
+        return fallback_technical_score(resume_text, job_description, projects)

@@ -175,8 +175,7 @@ def analyze_resumes():
                     "candidate_name": candidate_name,
                     "technical_score": result["technical_score"],
                     "proficiency_score": result["proficiency_score"],
-                    "pain_points": result["pain_points"],
-                    "summary": result["summary"],
+                    "strengths_weaknesses": result["strengths_weaknesses"],
                     "status": result["status"],
                     "projects": result["projects"],
                     "resume_path": f"/uploads/{filename}"
