@@ -1,0 +1,39 @@
+node_modules/
+.env
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+*.sqlite3
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+*.egg-info/
+*.egg
+
+# Environment variables
+.env
+
+# Uploads directory
+uploads/
+
+# Logs
+logs.txt
+app_logs.txt
+
+# Frontend build artifacts (optional, if you want to commit them)
+# frontend/node_modules/
+# frontend/build/  # Uncomment if you don't want to commit the build folder
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS-specific files
+.DS_Store
