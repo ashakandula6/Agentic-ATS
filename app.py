@@ -8,7 +8,7 @@ from document_parser import parse_document
 from masking_agent import mask_text
 from agents import analyze_resume
 from pymongo import MongoClient
-import google.generativeai as genai
+from openai import AzureOpenAI
 
 app = Flask(__name__, static_folder='frontend/build/static', template_folder='templates')
 app.config['UPLOAD_FOLDER'] = 'uploads'
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
-logger.info("Environment variables loaded: GOOGLE_API_KEY present=%s", "GOOGLE_API_KEY" in os.environ)
+logger.info("Environment variables loaded: AZURE_OPENAI_KEY present=%s", "AZURE_OPENAI_KEY" in os.environ)
 
 # Initialize MongoDB connection
 mongo_client = None
@@ -35,15 +35,18 @@ try:
     logger.info("MongoDB connection successful.")
 except Exception as e:
     logger.error(f"MongoDB connection failed: {e}")
-    # Continue without MongoDB instead of exiting
 
-# Configure Google Gemini API
+# Configure Azure OpenAI API
 try:
-    genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-    model = genai.GenerativeModel("gemini-2.5-flash")
-    logger.info("Google Gemini API configured successfully.")
+    client = AzureOpenAI(
+        api_key=os.getenv("AZURE_OPENAI_KEY"),
+        api_version=os.getenv("AZURE_OPENAI_VERSION"),
+        azure_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT")
+    )
+    model = os.getenv("AZURE_OPENAI_MODEL_NAME")
+    logger.info("Azure OpenAI API configured successfully.")
 except Exception as e:
-    logger.error(f"Failed to configure Gemini API: {e}")
+    logger.error(f"Failed to configure Azure OpenAI API: {e}")
     exit(1)
 
 def store_resume_in_mongo(resume_id: str, masked_text: str, mappings: dict, collection_id: str) -> dict:
@@ -75,8 +78,12 @@ def get_candidate_name(masked_text: str) -> str:
             "Return only the name as a string, nothing else.\n\n"
             f"{masked_text[:2000]}"
         )
-        response = model.generate_content(prompt)
-        candidate_name = response.text.strip()
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.0
+        )
+        candidate_name = response.choices[0].message.content.strip()
         if not candidate_name or len(candidate_name.split()) < 2 or len(candidate_name) > 30:
             logger.warning("No valid candidate name found by LLM, using 'Unknown Candidate'")
             return "Unknown Candidate"
@@ -128,7 +135,6 @@ def analyze_resumes():
         job_description_file = request.files.get('job_description_file')
         job_description_text = request.form.get('job_description', '')
 
-        # Process job description
         if job_description_file and job_description_file.filename.endswith(('.pdf', '.docx')):
             filename = secure_filename(job_description_file.filename)
             job_description_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)

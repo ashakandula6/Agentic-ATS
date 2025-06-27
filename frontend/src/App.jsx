@@ -25,7 +25,6 @@ function App() {
   };
 
   const handleJDFileChange = (e) => {
-    console.log('JD file input changed:', e.target.files);
     const file = e.target.files[0];
     if (!file) {
       setError('No file selected.');
@@ -96,7 +95,6 @@ function App() {
     e.preventDefault();
     e.stopPropagation();
     setIsJDUploadDragOver(false);
-    console.log('JD files dropped:', e.dataTransfer.files);
     const droppedFiles = Array.from(e.dataTransfer.files);
     const validFiles = droppedFiles.filter(
       (file) => {
@@ -105,7 +103,7 @@ function App() {
       }
     );
     if (validFiles.length > 0) {
-      setJobDescriptionFile({ ...validFiles[0] });
+      setJobDescriptionFile(validFiles[0]);
       setError(null);
       if (jdInputRef.current) {
         jdInputRef.current.value = '';
@@ -170,21 +168,8 @@ function App() {
   const toggleContent = (id) => {
     setVisibleContent((prev) => ({
       ...prev,
-      [id]: !prev[id] || false,
+      [id]: !prev[id],
     }));
-  };
-
-  const getStatusColor = (status) => {
-    switch (status.toLowerCase()) {
-      case 'shortlisted':
-        return 'bg-green-100 text-green-800';
-      case 'under consideration':
-        return 'bg-yellow-100 text-yellow-800';
-      case 'rejected':
-        return 'bg-red-100 text-red-800';
-      default:
-        return 'bg-gray-100 text-gray-800';
-    }
   };
 
   const getScoreColor = (score) => {
@@ -425,6 +410,14 @@ function App() {
                 <h2 className="text-2xl font-bold text-blue-700">Analysis Results</h2>
               </div>
               <p className="text-blue-600">Comprehensive resume analysis and candidate ranking</p>
+              {results.length > 0 && (
+                <button
+                  onClick={sortByScore}
+                  className="mt-4 bg-blue-600 text-white rounded-lg px-4 py-2 text-sm hover:bg-blue-700 transition-all duration-300"
+                >
+                  Sort by Technical Score
+                </button>
+              )}
             </div>
           </div>
 
@@ -437,24 +430,25 @@ function App() {
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Name</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Technical Score /100</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Proficiency Score /30</th>
-                      <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Strengths/Weakness</th>
+                      <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Strengths/Weaknesses</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Projects</th>
-                      <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Status</th>
                       <th className="px-6 py-4 text-left text-sm font-bold text-blue-700">Resume</th>
                     </tr>
                   </thead>
                   <tbody>
                     {results.map((result, index) => (
                       <tr key={index} className="border-b border-blue-100 hover:bg-blue-50 transition-colors">
-                        <td className="px-6 py-4 font-medium text-gray-900">{result.candidate_name}</td>
+                        <td className="px-6 py-4 font-medium text-gray-900">
+                          {result.candidate_name || 'Unknown Candidate'}
+                        </td>
                         <td className="px-6 py-4">
                           <span className={`px-3 py-1 rounded-full text-sm font-bold ${getScoreColor(result.technical_score)}`}>
-                            {result.technical_score}%
+                            {result.technical_score || 0}%
                           </span>
                         </td>
                         <td className="px-6 py-4">
                           <span className={`px-3 py-1 rounded-full text-sm font-bold ${getProficiencyColor(result.proficiency_score)}`}>
-                            {result.proficiency_score}/30
+                            {result.proficiency_score || 0}/30
                           </span>
                         </td>
                         <td className="px-6 py-4">
@@ -471,7 +465,7 @@ function App() {
                                 <div>
                                   <strong className="text-green-600">Strengths:</strong>
                                   <ul className="list-disc pl-5">
-                                    {result.strengths_weaknesses.strengths.length > 0 ? (
+                                    {result.strengths_weaknesses?.strengths?.length > 0 ? (
                                       result.strengths_weaknesses.strengths.map((strength, i) => (
                                         <li key={i}>{strength}</li>
                                       ))
@@ -483,7 +477,7 @@ function App() {
                                 <div>
                                   <strong className="text-red-600">Weaknesses:</strong>
                                   <ul className="list-disc pl-5">
-                                    {result.strengths_weaknesses.weaknesses.length > 0 ? (
+                                    {result.strengths_weaknesses?.weaknesses?.length > 0 ? (
                                       result.strengths_weaknesses.weaknesses.map((weakness, i) => (
                                         <li key={i}>{weakness}</li>
                                       ))
@@ -507,34 +501,30 @@ function App() {
                           {visibleContent[`projects-${index}`] && (
                             <div className="mt-2 bg-gray-50 rounded-lg p-3">
                               <div className="text-sm text-gray-700 space-y-2">
-                                {result.projects.length > 0 ? (
-                                  result.projects.map((project, i) => (
-                                    <div key={i}>
-                                      <strong className="text-blue-600">{project.name}</strong>
-                                      <p><strong>Description:</strong> {project.description}</p>
-                                      <p><strong>Skills:</strong> {project.skills.join(", ") || "None listed"}</p>
-                                      <p><strong>Relevance:</strong> {project.relevance}</p>
+                                {result.projects?.length > 0 ? (
+                                  result.projects.map((project, projIndex) => (
+                                    <div key={projIndex} className="border-b border-gray-200 pb-2 last:border-b-0">
+                                      <p><strong>Project Name:</strong> {project.name || 'Unnamed Project'}</p>
+                                      <p><strong>Description:</strong> {project.description || 'No description provided'}</p>
+                                      <p><strong>All Skills:</strong> {project.all_skills?.length > 0 ? project.all_skills.join(', ') : 'None listed'}</p>
+                                      <p><strong>Matched Mandatory Skills:</strong> {project.matched_mandatory_skills?.length > 0 ? project.matched_mandatory_skills.join(', ') : 'None'}</p>
+                                      <p><strong>Skill Match Count:</strong> {project.skill_match_count || 0}</p>
                                     </div>
                                   ))
                                 ) : (
-                                  <p>No projects identified in the resume.</p>
+                                  <p>No relevant projects found.</p>
                                 )}
                               </div>
                             </div>
                           )}
                         </td>
                         <td className="px-6 py-4">
-                          <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(result.status)}`}>
-                            {result.status}
-                          </span>
-                        </td>
-                        <td className="px-6 py-4">
                           <a
-                            href={`/uploads/${encodeURIComponent(result.resume_name)}`}
-                            download
-                            className="text-blue-600 font-semibold hover:text-blue-800 hover:underline flex items-center gap-1"
+                            href={resumes[index] ? URL.createObjectURL(resumes[index]) : '#'}
+                            download={resumes[index]?.name}
+                            className="text-blue-600 hover:text-blue-800 flex items-center gap-1"
                           >
-                            <Download className="w-3 h-3" />
+                            <Download className="w-4 h-4" />
                             Download
                           </a>
                         </td>
@@ -543,31 +533,12 @@ function App() {
                   </tbody>
                 </table>
               </div>
-              <div className="p-6">
-                <button
-                  onClick={sortByScore}
-                  className="bg-gradient-to-r from-blue-600 to-blue-700 text-white font-bold py-3 px-6 rounded-lg shadow-lg hover:from-blue-700 hover:to-blue-800 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 flex items-center justify-center gap-2"
-                >
-                  <BarChart3 className="w-4 h-4" />
-                  Sort by Score (High to Low)
-                </button>
-              </div>
             </div>
-          ) : (
-            <div className="bg-white border-2 border-dashed border-blue-300 rounded-xl p-12">
-              <div className="text-center">
-                <div className="flex items-center justify-center gap-2 mb-4">
-                  <FileText className="w-8 h-8 text-gray-400" />
-                  <h3 className="text-xl font-semibold text-gray-700">Detailed Results Table</h3>
-                </div>
-                <p className="text-gray-600">
-                  {analyzeClicked
-                    ? "No results to display. Please ensure valid resumes and job description are provided."
-                    : 'Upload resumes and click "Analyze" to see comprehensive candidate scoring and ranking'}
-                </p>
-              </div>
+          ) : analyzeClicked && !analyzing ? (
+            <div className="bg-yellow-50 border border-yellow-200 text-yellow-700 px-4 py-3 rounded-lg">
+              <p>No results to display. Please check your inputs and try again.</p>
             </div>
-          )}
+          ) : null}
         </div>
       </div>
     </div>
